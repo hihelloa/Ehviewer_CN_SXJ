@@ -1123,6 +1123,13 @@ public final class SpiderQueen implements Runnable {
         synchronized (mPageStateLock) {
             mPageStateArray = new int[spiderInfo.pages];
         }
+        // 页数可能变了，旧的失败重试排期全部作废：
+        // 否则越界的 index 会一直留在队列里，worker 永远等不到它完成。
+        synchronized (mRetryPageQueue) {
+            mRetryPageQueue.clear();
+            mRetryCount.clear();
+            mRetryAt.clear();
+        }
 
         // Notify get pages
         notifyGetPages(spiderInfo.pages);
@@ -1805,6 +1812,7 @@ public final class SpiderQueen implements Runnable {
                 // Check out of range
                 if (index < -1 || index >= size) {
                     // Invalid index
+                    clearRetry(index);
                     return true;
                 }
             }
