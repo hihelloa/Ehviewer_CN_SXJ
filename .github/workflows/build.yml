@@ -7,6 +7,9 @@ on:
     branches: [ BiLi_PC_Gamer, main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -25,9 +28,42 @@ jobs:
         run: |
           chmod +x ./gradlew
           ./gradlew app:assembleDebug
-          
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Build
           path: ./app/build/outputs/apk/
+
+      # 直接在 runner 内发 Release：artifact 下载要绕 Azure，
+      # 往返 40MB + 73MB，慢链路上经常中断，放这里只要几秒。
+      - name: Publish Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.3.2-fix
+          name: EhViewer v1.3.2（翻译显示修复 + 下载/看图加速）
+          body: |
+            ## 本次修复
+
+            - **烧录译文缺失时回退气泡**：以前只要烧录开关打开，气泡就被强制隐藏；
+              一旦该页没有烧录图（系统清缓存、烧录失败），画面上就一句译文都没有。
+              现在先确认烧录图是否真的存在，没有就显示气泡。
+            - **烧录图从 cacheDir 迁到 filesDir**：译文 JSON 存在 files 里，
+              烧录图却放 cache，系统清缓存后会出现"翻译记录还在、画面没译文"。
+              旧目录的图会自动迁移，不会丢。
+            - **恢复 Provider 兜底解码**，用弱引用表识别解码线程已返回的汉化图，
+              正常路径仍然只解一次，不会退回每页解两遍。
+            - **DNS 缓存 TTL 降到 2 分钟并每次打乱**，避免某个不可达 IP 被固定住。
+            - 批量翻译有失败页时给出明确提示，不再静默。
+
+            ## 上一版的性能改动
+
+            - 解除 OkHttp 单 host 5 并发上限（下载线程 6 / 预加载 8 才真正生效）
+            - 图片请求不再挂 HTTP 磁盘缓存，去掉每张图多写一遍的写放大
+            - 图片下载走独立客户端，不再每个响应同步 flush 一次 WebView cookie
+            - DNS 加内存缓存，下载进度回调从每 4KB 一次改为 1%/256KB 节流
+            - 预加载改成前 2 页 + 后 8 页，往回翻不再重新等下载
+          files: app/build/outputs/apk/appRelease/debug/*.apk
+          draft: false
+          prerelease: false
