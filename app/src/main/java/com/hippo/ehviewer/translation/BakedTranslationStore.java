@@ -140,7 +140,12 @@ public final class BakedTranslationStore {
         }
         try {
             Canvas canvas = new Canvas(out);
-            for (MangaTextBlock block : blocks) {
+            // 先画大块再画小块：ML Kit 偶尔会返回范围重叠的块，
+            // 按面积降序可以避免大背景把小气泡连同文字一起盖掉。
+            List<MangaTextBlock> ordered = new java.util.ArrayList<>(blocks);
+            java.util.Collections.sort(ordered,
+                    (a, b) -> Long.compare(areaOf(b.boundingBox), areaOf(a.boundingBox)));
+            for (MangaTextBlock block : ordered) {
                 String text = block.translatedText == null ? "" : block.translatedText.trim();
                 if (text.isEmpty()) {
                     continue;
@@ -225,6 +230,10 @@ public final class BakedTranslationStore {
         canvas.translate(tx, ty);
         layout.draw(canvas);
         canvas.restore();
+    }
+
+    private static long areaOf(@NonNull Rect r) {
+        return (long) Math.max(0, r.width()) * Math.max(0, r.height());
     }
 
     /**
