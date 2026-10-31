@@ -324,7 +324,9 @@ public class GalleryTranslationOverlay extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        if (!mIsVisible || mTextBlocks.isEmpty()) {
+        // 注意：不能因为 mIsVisible == false 就返回 false，
+        // 否则双击隐藏后整个覆盖层不再接收事件，用户无法再双击恢复。
+        if (mTextBlocks.isEmpty()) {
             return false;
         }
         // 如果点击在任何一个气泡内，消费该事件

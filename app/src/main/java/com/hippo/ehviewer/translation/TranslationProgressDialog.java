@@ -92,7 +92,9 @@ public class TranslationProgressDialog {
                     Toast.makeText(activity, activity.getString(R.string.translate_cancelled, finished, total),
                             Toast.LENGTH_LONG).show();
                 } else {
-                    Toast.makeText(activity, activity.getString(R.string.translate_finished, finished, failed),
+                    // finished 含失败页，成功页数要单独算
+                    int succeeded = Math.max(finished - failed, 0);
+                    Toast.makeText(activity, activity.getString(R.string.translate_finished, succeeded, failed),
                             Toast.LENGTH_LONG).show();
                 }
             }
