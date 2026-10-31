@@ -24,6 +24,8 @@ import android.os.Process;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.SparseArray;
+import android.util.SparseIntArray;
+import android.util.SparseLongArray;
 import android.webkit.MimeTypeMap;
 
 import androidx.annotation.IntDef;
@@ -110,6 +112,10 @@ public final class SpiderQueen implements Runnable {
     public static final String SPIDER_INFO_FILENAME = ".ehviewer";
 
     public static final String SPIDER_INFO_BACKUP_DIR = "backupDir";
+    // 失败页重试的最小/最大间隔。连续失败按 2s、4s、8s… 退避到 30s 封顶，
+    // 既不放弃任何一页，也不会把站点打爆。
+    private static final long RETRY_MIN_DELAY_MS = 2000L;
+    private static final long RETRY_MAX_DELAY_MS = 30000L;
     private static final String TAG = SpiderQueen.class.getSimpleName();
     private static final AtomicInteger sIdGenerator = new AtomicInteger();
     private static final boolean DEBUG_LOG = false;
@@ -146,6 +152,13 @@ public final class SpiderQueen implements Runnable {
     private final Queue<Integer> mRequestPageQueue2 = new LinkedList<>();
     // Store force request page. The index may be invalid
     private final Queue<Integer> mForceRequestPageQueue = new LinkedList<>();
+    // Store failed page waiting for retry. Never gives up until the page
+    // succeeds or the spider is stopped by the user.
+    private final Queue<Integer> mRetryPageQueue = new LinkedList<>();
+    // Retry count / next retry time per page, used for exponential backoff.
+    // Guarded by mRetryPageQueue.
+    private final SparseIntArray mRetryCount = new SparseIntArray();
+    private final SparseLongArray mRetryAt = new SparseLongArray();
     private final AtomicInteger mDownloadedPages = new AtomicInteger(0);
     private final AtomicInteger mFinishedPages = new AtomicInteger(0);
     private final Object showKeyLock = new Object();
@@ -442,6 +455,12 @@ public final class SpiderQueen implements Runnable {
         }
 
         if (intoDownloadMode && mPageStateArray != null) {
+            // 重新开始整本下载，之前的失败重试记录作废
+            synchronized (mRetryPageQueue) {
+                mRetryPageQueue.clear();
+                mRetryCount.clear();
+                mRetryAt.clear();
+            }
             // Clear download state
             synchronized (mPageStateLock) {
                 int[] temp = mPageStateArray;
@@ -548,11 +567,16 @@ public final class SpiderQueen implements Runnable {
 
     private void tryToEnsureWorkers() {
         boolean startWorkers = false;
+        boolean hasRetry;
+        synchronized (mRetryPageQueue) {
+            hasRetry = !mRetryPageQueue.isEmpty();
+        }
         synchronized (mRequestPageQueue) {
             if (mPageStateArray != null &&
                     (!mForceRequestPageQueue.isEmpty() ||
                             !mRequestPageQueue.isEmpty() ||
                             !mRequestPageQueue2.isEmpty() ||
+                            hasRetry ||
                             mDownloadPage >= 0 && mDownloadPage < mPageStateArray.length)) {
                 startWorkers = true;
             }
@@ -574,6 +598,90 @@ public final class SpiderQueen implements Runnable {
         synchronized (mDecodeRequestQueue) {
             mDecodeRequestQueue.remove(index);
         }
+        clearRetry(index);
+    }
+
+    /**
+     * 登记一个下载失败的页，等退避时间到了以后由空闲 worker 重新下载。
+     * 不设重试上限：只有下载成功或用户停止任务才会结束。
+     */
+    private void scheduleRetry(int index) {
+        synchronized (mRetryPageQueue) {
+            int count = mRetryCount.get(index, 0) + 1;
+            mRetryCount.put(index, count);
+            long delay = RETRY_MIN_DELAY_MS << Math.min(count - 1, 4);
+            if (delay > RETRY_MAX_DELAY_MS || delay <= 0) {
+                delay = RETRY_MAX_DELAY_MS;
+            }
+            mRetryAt.put(index, System.currentTimeMillis() + delay);
+            if (!mRetryPageQueue.contains(index)) {
+                mRetryPageQueue.add(index);
+            }
+        }
+        tryToEnsureWorkers();
+    }
+
+    private void clearRetry(int index) {
+        synchronized (mRetryPageQueue) {
+            mRetryPageQueue.remove(Integer.valueOf(index));
+            mRetryCount.delete(index);
+            mRetryAt.delete(index);
+        }
+    }
+
+    @SuppressWarnings("unused")
+    private int getRetryCount(int index) {
+        synchronized (mRetryPageQueue) {
+            return mRetryCount.get(index, 0);
+        }
+    }
+
+    /** 取一个已经到重试时间的失败页，没有则返回 -1。 */
+    private int pollReadyRetryPage() {
+        synchronized (mRetryPageQueue) {
+            return pollReadyRetryPageLocked();
+        }
+    }
+
+    /** 取一个已经到重试时间的失败页，没有则返回 -1。调用方必须持有 mRetryPageQueue 锁。 */
+    private int pollReadyRetryPageLocked() {
+        long now = System.currentTimeMillis();
+        int size = mRetryPageQueue.size();
+        for (int i = 0; i < size; i++) {
+            Integer page = mRetryPageQueue.poll();
+            if (page == null) {
+                return -1;
+            }
+            if (mRetryAt.get(page, 0L) <= now) {
+                return page;
+            }
+            // 还没到时间，放回队尾，保证各页机会均等
+            mRetryPageQueue.add(page);
+        }
+        return -1;
+    }
+
+    /** 最近一个待重试页还要等多久，没有待重试页返回 -1。 */
+    private long nextRetryDelay() {
+        synchronized (mRetryPageQueue) {
+            return nextRetryDelayLocked();
+        }
+    }
+
+    /** 最近一个待重试页还要等多久，没有待重试页返回 -1。调用方必须持有 mRetryPageQueue 锁。 */
+    private long nextRetryDelayLocked() {
+        if (mRetryPageQueue.isEmpty()) {
+            return -1;
+        }
+        long now = System.currentTimeMillis();
+        long min = Long.MAX_VALUE;
+        for (Integer page : mRetryPageQueue) {
+            long delta = mRetryAt.get(page, 0L) - now;
+            if (delta < min) {
+                min = delta;
+            }
+        }
+        return min == Long.MAX_VALUE ? -1 : Math.max(0, min);
     }
 
     /**
@@ -595,6 +703,8 @@ public final class SpiderQueen implements Runnable {
             // Update state to none at once
             updatePageState(index, STATE_NONE);
             state = STATE_NONE;
+            // 手动重新请求，作废原来的重试排期，避免同一页被两处调度
+            clearRetry(index);
         }
 
         // Add to request
@@ -1617,6 +1727,7 @@ public final class SpiderQueen implements Runnable {
 
                     // Download finished
                     updatePageState(index, STATE_FINISHED);
+                    clearRetry(index);
                     try {
                         Thread.sleep(mDownloadDelay);
                     } catch (InterruptedException e) {
@@ -1640,6 +1751,10 @@ public final class SpiderQueen implements Runnable {
             mSpiderDen.remove(index);
 
             updatePageState(index, STATE_FAILED, error);
+            if (!interrupt) {
+                // 只要不是用户主动停止，就登记重试：失败页不会就此作废
+                scheduleRetry(index);
+            }
             return !interrupt;
         }
 
@@ -1659,6 +1774,9 @@ public final class SpiderQueen implements Runnable {
             int index;
             // From force request
             boolean force = false;
+            // From retry queue (page failed before, allow STATE_FAILED)
+            boolean retry = false;
+            long waitRetryMs = -1;
             synchronized (mRequestPageQueue) {
                 if (!mForceRequestPageQueue.isEmpty()) {
                     index = mForceRequestPageQueue.remove();
@@ -1667,25 +1785,48 @@ public final class SpiderQueen implements Runnable {
                     index = mRequestPageQueue.remove();
                 } else if (!mRequestPageQueue2.isEmpty()) {
                     index = mRequestPageQueue2.remove();
+                } else if ((index = pollReadyRetryPage()) >= 0) {
+                    retry = true;
                 } else if (mDownloadPage >= 0 && mDownloadPage < size) {
                     index = mDownloadPage;
                     mDownloadPage++;
                 } else {
-                    // No index any more, stop
-                    return false;
+                    // 没有新页，但还有失败页在等退避：worker 不能退出，
+                    // 一旦退出就会 notifyFinish，整条下载任务被判定结束，
+                    // 重试也就随之终止了。
+                    waitRetryMs = nextRetryDelay();
+                    if (waitRetryMs < 0) {
+                        // No index any more, stop
+                        return false;
+                    }
+                    index = -1;
                 }
 
                 // Check out of range
-                if (index < 0 || index >= size) {
+                if (index < -1 || index >= size) {
                     // Invalid index
                     return true;
                 }
             }
 
+            if (index < 0) {
+                // 等到最近一页到重试时间再继续，分片睡眠保证能及时响应中断
+                try {
+                    Thread.sleep(Math.max(200L, Math.min(waitRetryMs, 1000L)));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return true;
+            }
+
             synchronized (mPageStateLock) {
                 // Check the page state
                 int state = mPageStateArray[index];
-                if (state == STATE_DOWNLOADING || (!force && (state == STATE_FINISHED || state == STATE_FAILED))) {
+                if (state == STATE_DOWNLOADING || state == STATE_FINISHED
+                        || (!force && !retry && state == STATE_FAILED)) {
+                    // 这一页已有结果或正在下载，清掉重试记录：
+                    // 否则它会在队列里被反复取出，形成忙循环。
+                    clearRetry(index);
                     return true;
                 }
 
@@ -1696,6 +1837,7 @@ public final class SpiderQueen implements Runnable {
             // Check exist for not force request
             if (!force && mSpiderDen.contain(index)) {
                 updatePageState(index, STATE_FINISHED);
+                clearRetry(index);
                 return true;
             }
 
@@ -1781,6 +1923,8 @@ public final class SpiderQueen implements Runnable {
             if (SpiderInfo.TOKEN_FAILED.equals(pToken)) {
                 // Get token failed
                 updatePageState(index, STATE_FAILED, GetText.getString(R.string.error_get_ptoken_error));
+                // pToken 获取失败通常是临时的（站点限流/跳转异常），同样排队重试
+                scheduleRetry(index);
                 return true;
             }
 

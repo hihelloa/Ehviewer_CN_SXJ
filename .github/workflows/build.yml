@@ -29,6 +29,9 @@ jobs:
           chmod +x ./gradlew
           ./gradlew app:assembleDebug
 
+      - name: Rename APK
+        run: cp app/build/outputs/apk/appRelease/debug/*.apk EhViewer_v1.3.3_retry.apk
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -41,29 +44,27 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.3.2-fix
-          name: EhViewer v1.3.2（翻译显示修复 + 下载/看图加速）
+          tag_name: v1.3.3-retry
+          name: EhViewer v1.3.3（失败页无限重试 + 下载/看图加速）
           body: |
-            ## 本次修复
+            ## 本次改动
 
-            - **烧录译文缺失时回退气泡**：以前只要烧录开关打开，气泡就被强制隐藏；
-              一旦该页没有烧录图（系统清缓存、烧录失败），画面上就一句译文都没有。
-              现在先确认烧录图是否真的存在，没有就显示气泡。
-            - **烧录图从 cacheDir 迁到 filesDir**：译文 JSON 存在 files 里，
-              烧录图却放 cache，系统清缓存后会出现"翻译记录还在、画面没译文"。
-              旧目录的图会自动迁移，不会丢。
-            - **恢复 Provider 兜底解码**，用弱引用表识别解码线程已返回的汉化图，
-              正常路径仍然只解一次，不会退回每页解两遍。
-            - **DNS 缓存 TTL 降到 2 分钟并每次打乱**，避免某个不可达 IP 被固定住。
-            - 批量翻译有失败页时给出明确提示，不再静默。
+            - **下载失败的图片不再作废，而是自动一直重试**：以前某一页失败后就被标记成
+              "失败"，整本下载任务直接结束，那几页永远补不回来。现在失败页会进入重试队列，
+              按 2s、4s、8s… 退避到 30s 封顶反复重下，直到成功或用户主动停止任务。
+            - 重试在后台由空闲 worker 完成，不会占用正常页的下载位置，也不会让页面卡死。
+            - **翻译取图同样不再放弃**：整本翻译里某页取不到图时，以前重试 90 次（约 40 分钟）
+              就跳过；现在会一直重试，直到拿到图或用户取消。
+            - 重试期间进度会停在当前百分比，这是正常的，说明它在等失败页补回来。
 
-            ## 上一版的性能改动
+            ## 已经修好的问题（上一版）
 
+            - 烧录译文缺失时回退气泡，系统清缓存后不会出现"翻译记录还在、画面没译文"
+            - 烧录图从 cacheDir 迁到 filesDir，旧图自动迁移
             - 解除 OkHttp 单 host 5 并发上限（下载线程 6 / 预加载 8 才真正生效）
             - 图片请求不再挂 HTTP 磁盘缓存，去掉每张图多写一遍的写放大
-            - 图片下载走独立客户端，不再每个响应同步 flush 一次 WebView cookie
             - DNS 加内存缓存，下载进度回调从每 4KB 一次改为 1%/256KB 节流
             - 预加载改成前 2 页 + 后 8 页，往回翻不再重新等下载
-          files: app/build/outputs/apk/appRelease/debug/*.apk
+          files: EhViewer_v1.3.3_retry.apk
           draft: false
           prerelease: false

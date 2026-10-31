@@ -31,8 +31,8 @@ public class BatchMangaTranslator {
 
     private static final String TAG = "BatchMangaTranslator";
     private static final int MAX_DECODE_SIZE = 1800;
-    /** 单页取图最多重试次数，约 90 × (20s + 退避) ≈ 40 分钟，避免后台任务永久卡在某一页。 */
-    private static final int MAX_FETCH_RETRY = 90;
+    /** 单页取图重试上限，0 表示不设上限（失败就一直重试，直到成功或用户取消）。 */
+    private static final int MAX_FETCH_RETRY = 0;
 
     private static volatile BatchMangaTranslator sInstance;
 
@@ -208,7 +208,7 @@ public class BatchMangaTranslator {
                         }
                         attempt++;
                         postRetry(key, index, attempt);
-                        if (attempt >= MAX_FETCH_RETRY) {
+                        if (MAX_FETCH_RETRY > 0 && attempt >= MAX_FETCH_RETRY) {
                             // 重试到上限仍失败：放弃本页继续下一页，避免整本任务永久卡死
                             Log.w(TAG, "Give up page " + index + " after " + attempt + " attempts");
                             break;
