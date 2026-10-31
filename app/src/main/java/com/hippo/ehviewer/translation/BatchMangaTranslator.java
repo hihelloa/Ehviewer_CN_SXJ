@@ -245,13 +245,25 @@ public class BatchMangaTranslator {
                         postProgress(task);
                         continue;
                     }
+                    boolean recycleSafe = true;
                     try {
-                        List<MangaTextBlock> blocks = cachedBlocks != null
-                                ? cachedBlocks
+                        MangaOcrManager.PageOcrResult ocr = cachedBlocks != null
+                                ? null
                                 : MangaOcrManager.getInstance().recognizePageSync(bitmap);
-                        int translated = cachedBlocks != null
-                                ? cachedBlocks.size()
-                                : GoogleTranslator.translateBlocksSync(blocks);
+                        if (ocr != null) {
+                            // 超时的话 ML Kit 可能还在读这张图，不能回收
+                            recycleSafe = ocr.recycleSafe;
+                        }
+                        List<MangaTextBlock> blocks = cachedBlocks != null ? cachedBlocks : ocr.blocks;
+                        int translated;
+                        if (cachedBlocks != null) {
+                            // 旧缓存里可能还留着当时没译出来的空句，补译一遍再烧录，
+                            // 否则这些句子会永远停在空白
+                            GoogleTranslator.fillMissingTranslations(blocks);
+                            translated = GoogleTranslator.countTranslated(blocks);
+                        } else {
+                            translated = GoogleTranslator.translateBlocksSync(blocks);
+                        }
                         if (!blocks.isEmpty() && translated == 0) {
                             // 整页翻译全部失败（限流/断网），不要写缓存，否则该页会永久停留在原文
                             Log.w(TAG, "Page " + index + " translation all failed, will retry later");
@@ -276,7 +288,9 @@ public class BatchMangaTranslator {
                         postPage(key, index, blocks);
                         postProgress(task);
                     } finally {
-                        bitmap.recycle();
+                        if (recycleSafe) {
+                            bitmap.recycle();
+                        }
                     }
                 } catch (Throwable t) {
                     Log.e(TAG, "Translate page " + index + " failed: " + t.getMessage(), t);

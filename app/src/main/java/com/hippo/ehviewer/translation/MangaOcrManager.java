@@ -43,6 +43,24 @@ public class MangaOcrManager {
         void onFailure(@NonNull String error);
     }
 
+    /**
+     * 同步识别结果。
+     *
+     * <p>{@code recycleSafe} 很重要：超时返回时 ML Kit 的任务可能还在这张 bitmap 上跑，
+     * 这时调用方如果 recycle，轻则抛 "trying to use a recycled bitmap"，重则 native 崩溃。
+     * 超时的情况下宁可让 bitmap 交给 GC，也不能主动回收。
+     */
+    public static final class PageOcrResult {
+        @NonNull
+        public final List<MangaTextBlock> blocks;
+        public final boolean recycleSafe;
+
+        PageOcrResult(@NonNull List<MangaTextBlock> blocks, boolean recycleSafe) {
+            this.blocks = blocks;
+            this.recycleSafe = recycleSafe;
+        }
+    }
+
     private MangaOcrManager() {
         // 使用针对日文（平假名、片假名、汉字）优化的识别器，且兼容拉丁字母（英文）
         JapaneseTextRecognizerOptions options = new JapaneseTextRecognizerOptions.Builder().build();
@@ -131,11 +149,20 @@ public class MangaOcrManager {
      */
     @NonNull
     public List<MangaTextBlock> recognizeSync(@NonNull Bitmap bitmap) {
-        return recognizeSync(bitmap, DEFAULT_SYNC_TIMEOUT_MS);
+        return recognizeSyncResult(bitmap, DEFAULT_SYNC_TIMEOUT_MS).blocks;
     }
 
     @NonNull
     public List<MangaTextBlock> recognizeSync(@NonNull Bitmap bitmap, long timeoutMs) {
+        return recognizeSyncResult(bitmap, timeoutMs).blocks;
+    }
+
+    /**
+     * 同步识别，并告诉调用方这张 bitmap 现在能不能安全回收。
+     * 必须在后台线程调用。
+     */
+    @NonNull
+    public PageOcrResult recognizeSyncResult(@NonNull Bitmap bitmap, long timeoutMs) {
         final CountDownLatch latch = new CountDownLatch(1);
         final java.util.concurrent.atomic.AtomicReference<List<MangaTextBlock>> holder =
                 new java.util.concurrent.atomic.AtomicReference<>(Collections.emptyList());
@@ -155,14 +182,17 @@ public class MangaOcrManager {
             }
         });
 
+        boolean completed = false;
         try {
-            if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+            completed = latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+            if (!completed) {
+                // 注意：此时不能回收 bitmap，ML Kit 内部任务可能仍持有它
                 Log.w(TAG, "recognizeSync timeout after " + timeoutMs + "ms");
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        return holder.get();
+        return new PageOcrResult(holder.get(), completed);
     }
 
     /**
@@ -173,17 +203,18 @@ public class MangaOcrManager {
      * 必须在后台线程调用。
      */
     @NonNull
-    public List<MangaTextBlock> recognizePageSync(@NonNull Bitmap bitmap) {
+    public PageOcrResult recognizePageSync(@NonNull Bitmap bitmap) {
         final int width = bitmap.getWidth();
         final int height = bitmap.getHeight();
         if (width <= 0 || height <= 0) {
-            return Collections.emptyList();
+            return new PageOcrResult(Collections.emptyList(), true);
         }
         if (height <= TILE_HEIGHT + TILE_OVERLAP) {
-            return recognizeSync(bitmap);
+            return recognizeSyncResult(bitmap, DEFAULT_SYNC_TIMEOUT_MS);
         }
 
         List<MangaTextBlock> merged = new ArrayList<>();
+        boolean recycleSafe = true;
         int step = TILE_HEIGHT - TILE_OVERLAP;
         for (int top = 0; top < height; top += step) {
             int bottom = Math.min(top + TILE_HEIGHT, height);
@@ -191,17 +222,30 @@ public class MangaOcrManager {
                 break;
             }
             Bitmap tile = null;
+            boolean tileSafe = true;
             List<MangaTextBlock> blocks;
             try {
                 tile = Bitmap.createBitmap(bitmap, 0, top, width, bottom - top);
-                blocks = recognizeSync(tile, TILE_TIMEOUT_MS);
+                PageOcrResult result = recognizeSyncResult(tile, TILE_TIMEOUT_MS);
+                tileSafe = result.recycleSafe;
+                blocks = result.blocks;
             } catch (Throwable t) {
                 Log.w(TAG, "slice at " + top + " failed: " + t.getMessage());
                 break;
             } finally {
                 if (tile != null) {
-                    tile.recycle();
+                    if (tileSafe) {
+                        tile.recycle();
+                    } else {
+                        // 这片超时了，ML Kit 可能还在读它：不回收，交给 GC，
+                        // 否则会在 native 层踩到已释放的内存。
+                        recycleSafe = false;
+                    }
                 }
+            }
+            if (!tileSafe) {
+                Log.w(TAG, "slice at " + top + " timed out, stop slicing");
+                break;
             }
             for (MangaTextBlock block : blocks) {
                 Rect box = new Rect(block.boundingBox);
@@ -215,7 +259,7 @@ public class MangaOcrManager {
                 break;
             }
         }
-        return merged;
+        return new PageOcrResult(merged, recycleSafe);
     }
 
     /** 重叠带里的同一段文字会被相邻两片各识别一次，按交叠比例去重。 */

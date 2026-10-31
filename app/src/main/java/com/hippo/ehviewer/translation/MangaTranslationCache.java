@@ -277,8 +277,12 @@ public class MangaTranslationCache {
     private void writeToDisk(@NonNull String key, @NonNull GalleryCache cache) {
         JSONObject root = new JSONObject();
         JSONObject pagesJson = new JSONObject();
+        // 注意：不能无脑写 VERSION。旧版缓存（v1）如果被单页翻译写一次盘就"升级"成 v2，
+        // 整本翻译的 isLegacy 判定会失效，其余页的漏字就会被永久固化。
+        // 只有整本重建（clear 后 version=0）或新画廊才写当前版本号。
+        int writeVersion = cache.version > 0 ? cache.version : VERSION;
         try {
-            root.put("version", VERSION);
+            root.put("version", writeVersion);
             root.put("key", key);
             for (Map.Entry<Integer, List<MangaTextBlock>> entry : cache.pages.entrySet()) {
                 JSONArray array = new JSONArray();
@@ -316,13 +320,19 @@ public class MangaTranslationCache {
             os.flush();
             os.close();
             os = null;
-            if (file.exists() && !file.delete()) {
-                Log.w(TAG, "Failed to delete old cache file");
+            // 先直接 rename（Linux 上是原子替换）。原来的"先删旧文件再 rename"
+            // 在两步之间被杀进程会连旧缓存一起丢，整本翻译成果归零。
+            boolean renamed = tmp.renameTo(file);
+            if (!renamed) {
+                if (file.exists() && !file.delete()) {
+                    Log.w(TAG, "Failed to delete old cache file");
+                }
+                renamed = tmp.renameTo(file);
             }
-            if (!tmp.renameTo(file)) {
-                Log.w(TAG, "Failed to rename cache file");
+            if (renamed) {
+                cache.version = writeVersion;
             } else {
-                cache.version = VERSION;
+                Log.w(TAG, "Failed to rename cache file");
             }
         } catch (Throwable t) {
             Log.e(TAG, "Write cache failed: " + t.getMessage());

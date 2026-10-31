@@ -17,3 +17,8 @@ gradle/wrapper/gradle-wrapper.properties
 /download/00000006.gif
 open_source_licenses.html
 /.vscode/settings.json
+
+# 签名证书不入库（CI 从 Secrets 解码）
+app/keystore/
+*.jks
+*.keystore

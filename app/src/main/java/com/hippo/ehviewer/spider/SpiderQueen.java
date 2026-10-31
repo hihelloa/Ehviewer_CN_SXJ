@@ -116,6 +116,12 @@ public final class SpiderQueen implements Runnable {
     // 既不放弃任何一页，也不会把站点打爆。
     private static final long RETRY_MIN_DELAY_MS = 2000L;
     private static final long RETRY_MAX_DELAY_MS = 30000L;
+    /**
+     * 阅读模式下单页最多补几次。
+     * 下载任务要求"失败必须重到成功"，但阅读模式下用户已经翻过去了，
+     * 无限重试只会持续耗电、刷站点，还会让 worker 永远不退出。
+     */
+    private static final int READ_MODE_MAX_RETRY = 3;
     private static final String TAG = SpiderQueen.class.getSimpleName();
     private static final AtomicInteger sIdGenerator = new AtomicInteger();
     private static final boolean DEBUG_LOG = false;
@@ -608,6 +614,14 @@ public final class SpiderQueen implements Runnable {
     private void scheduleRetry(int index) {
         synchronized (mRetryPageQueue) {
             int count = mRetryCount.get(index, 0) + 1;
+            // 阅读模式（没有整本下载任务）不做无限重试，
+            // 否则用户只是翻过去看一眼，后台会一直重下这一页，耗电且占着 worker
+            if (mDownloadPage < 0 && count > READ_MODE_MAX_RETRY) {
+                mRetryPageQueue.remove(Integer.valueOf(index));
+                mRetryCount.delete(index);
+                mRetryAt.delete(index);
+                return;
+            }
             mRetryCount.put(index, count);
             long delay = RETRY_MIN_DELAY_MS << Math.min(count - 1, 4);
             if (delay > RETRY_MAX_DELAY_MS || delay <= 0) {

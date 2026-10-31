@@ -191,7 +191,22 @@ public class GoogleTranslator {
         return missing;
     }
 
-    private static int countTranslated(@NonNull List<MangaTextBlock> blocks) {
+    /**
+     * 只补译缺失的块，不动已经译好的内容。
+     * 用于"缓存里已有译文、但当时有几句没译出来"的页面，避免整页重翻浪费请求。
+     *
+     * @return 本次补译成功的块数
+     */
+    public static int fillMissingTranslations(@NonNull List<MangaTextBlock> blocks) {
+        List<MangaTextBlock> missing = collectMissing(blocks);
+        if (missing.isEmpty()) {
+            return 0;
+        }
+        Log.w(TAG, "fill missing blocks: " + missing.size());
+        return translateBlocksOneByOne(missing);
+    }
+
+    public static int countTranslated(@NonNull List<MangaTextBlock> blocks) {
         int count = 0;
         for (MangaTextBlock block : blocks) {
             if (block.hasTranslation()) {

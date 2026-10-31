@@ -54,13 +54,36 @@ android {
         checkReleaseBuilds true
     }
 
+    // 固定签名：CI 在构建前把 Secrets 里的 keystore 解码到 app/keystore/。
+    // 没有这个文件时（普通本地开发）不配置签名，Gradle 会退回默认 debug 签名。
+    // 固定签名的意义是每次发布的 APK 证书一致，可以直接覆盖安装升级，不用卸载重装。
+    def releaseKeystore = file("keystore/ehviewer-release.jks")
+    def hasReleaseKeystore = releaseKeystore.exists()
+
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            release {
+                storeFile releaseKeystore
+                storePassword System.getenv("KEYSTORE_PASSWORD") ?: "ehviewer2024"
+                keyAlias System.getenv("KEY_ALIAS") ?: "ehviewer"
+                keyPassword System.getenv("KEY_PASSWORD") ?: "ehviewer2024"
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (hasReleaseKeystore) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             buildConfigField 'String', 'FILE_PROVIDER_AUTHORITY', '"com.hippo.ehviewer.fileprovider"'
         }
         debug {
+            if (hasReleaseKeystore) {
+                signingConfig signingConfigs.release
+            }
             applicationIdSuffix ".debug1"
             buildConfigField 'String', 'FILE_PROVIDER_AUTHORITY', '"com.hippo.ehviewer.debug.fileprovider"'
         }

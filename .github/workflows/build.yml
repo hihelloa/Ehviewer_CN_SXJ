@@ -24,13 +24,40 @@ jobs:
           distribution: 'temurin'
           java-version: 21
 
+      # 固定签名证书，保证每个版本证书一致，可以直接覆盖升级。
+      # 证书只存在于仓库 Secrets 里，不进代码库。
+      - name: Restore keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::缺少 KEYSTORE_BASE64，无法签名"
+            exit 1
+          fi
+          mkdir -p app/keystore
+          echo "$KEYSTORE_BASE64" | base64 -d > app/keystore/ehviewer-release.jks
+
       - name: Build
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           chmod +x ./gradlew
-          ./gradlew app:assembleDebug
+          ./gradlew app:assembleAppReleaseRelease -x lintVitalRelease --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/appRelease/debug/*.apk EhViewer_v1.3.4_full.apk
+        run: |
+          APK=$(ls app/build/outputs/apk/appRelease/release/*.apk | head -1)
+          echo "构建产物：$APK"
+          cp "$APK" EhViewer_v1.3.5_fix.apk
+
+      - name: Verify signature
+        run: |
+          keytool -printcert -jarfile EhViewer_v1.3.5_fix.apk
+          keytool -printcert -jarfile EhViewer_v1.3.5_fix.apk \
+            | grep -q "F2:A9:F5:3A:7C:BD:F6:56:B4:F7:3E:90:6A:F4:F2:51:C2:5E:F5:31:01:1D:4E:76:49:EB:2E:9D:85:5E:AD:A0" \
+            || (echo "::error::APK 签名不是预期的固定证书" && exit 1)
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -44,51 +71,77 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.3.4-full
-          name: EhViewer v1.3.4（翻译完整性修复）
+          tag_name: v1.3.5-fix
+          name: EhViewer v1.3.5（翻译可靠性修复）
           body: |
-            ## 本次修复：翻译不全
+            ## 安装说明（这版必看）
 
-            ### 1. OCR 输入分辨率
+            从这一版开始 APK 使用**固定证书**签名，以后每个版本都能直接覆盖安装升级。
+            旧版本的签名和包名都和这版不一样，所以这次要**先卸载旧版再装**，之后就不用再卸了。
 
-            原来整页缩到长边 1800px 再识别。但 Bitmap 采样只能取 2 的幂，
-            1600×2400 的页面会被**直接砍成 800×1200**，漫画小字全部糊掉。
-            现在改为精确缩放，保持最长边 2600。
+            ## 这次修的是"会永久坏掉"的问题
 
-            ### 2. 长页切片识别
+            上一版修了识别精度和绘制，但还有几条路径会让某一页**永久**停在空白，
+            这一版全部堵上。
 
-            长条页整张送进 ML Kit 会被内部降采样，底部文字基本识别不出来。
-            现在按 1400px 高度切片、带 220px 重叠，逐片识别后合并去重。
+            ### 1. 单页翻译失败不再写缓存
 
-            ### 3. 译文不再被裁掉
+            原来单页翻译只要 OCR 出了文字就写缓存，哪怕一句都没译出来（限流、断网）。
+            写进去之后这一页就被判定"已翻译"，整本翻译从此永久跳过它。
+            现在一句话都没译出来时不写缓存，并提示失败。
 
-            原来绘制时用 `clipRect` 把超出原文框的部分硬裁，中文比日文长，
-            经常只显示前两行。现在背景随文字实际高度扩展（最多 3 倍），
-            竖排窄框优先向两侧扩宽，文字始终完整可见。
+            ### 2. OCR 超时会崩溃
 
-            ### 4. 漏译的块会补翻
+            识别超时（首次加载模型、超长页）时，`CountDownLatch` 返回了，但 ML Kit
+            内部任务还在读那张 bitmap。调用方紧接着 `recycle()`，轻则抛
+            "trying to use a recycled bitmap"，重则 native 崩溃。
+            现在 OCR 会回报"是否可安全回收"，超时就不回收，交给 GC。
 
-            翻译失败的块以前会把日文写回"译文"，烧录时又把原文画一遍。
-            现在失败保持空白，整页翻译后再补两轮；一句都没译出来时不生成烧录图。
+            ### 3. 单页翻译会把旧缓存"冒充"成新版
 
-            ### 5. 旧的残缺缓存会重建
+            v1 缓存要在整本翻译时重建，但单页翻译写盘时把版本号直接写成了当前版本，
+            整本翻译的旧版判定随之失效，其余页的漏字就被永久固化。
+            现在写盘保留原版本号，只有整本重建或新画廊才写当前版本。
 
-            升级后第一次点「翻译整本」，检测到 v1 缓存会整本重译。
-            v1 是 1800px 缩略图 OCR 的产物，本身就是漏字的，
-            不重建的话这些页会被永久跳过。
+            ### 4. 补烧录时顺带补译漏句
+
+            以前"已有缓存但没烧录图"的页只重新生成图片，缓存里那些当年没译出来的空句
+            就一直是空的。现在会先把缺的句子补译一遍再烧录。
+
+            ### 5. 白色背景不再糊住画面
+
+            `StaticLayout.getWidth()` 返回的是构造时的最大宽度，不是文字实际宽度，
+            结果每块译文都画成一条和最大宽度一样宽的白色长条。
+            现在按文字真实宽度绘制，只盖住原来那句日文。
+
+            ### 6. 译文写入改为原子替换
+
+            原来是"删旧文件 → 重命名"，两步之间被杀进程会连旧译文一起丢。
+            现在直接 rename（Linux 上原子替换），掉电也不会把整本翻译成果清零。
+
+            ### 7. 阅读模式不再无限重试
+
+            下载任务仍然"失败必须重到成功"；但阅读模式下用户已经翻过去了，
+            无限重下只会耗电、持续请求站点，还会让下载线程永不退出。
+            阅读模式改为最多补 3 次。
+
+            ### 8. 低内存机型不再因烧录崩溃
+
+            2600px 页面做 ARGB_8888 副本约 37MB，内存不足时降级到 RGB_565。
 
             ## 使用提示
 
-            装好后打开之前翻译过的书，点一次「翻译整本」触发重建。
-            页数多的话会跑一段时间，进度条会正常推进。
+            装好后对翻译过的书点一次「翻译整本」，会把漏译的句子补上；
+            之前画成白色长条的页会被重新烧录。
 
             ## 之前版本已修复
 
+            - OCR 分辨率 2600 + 长页切片识别，小字不再漏
+            - 译文不再被 clipRect 裁掉
+            - v1 残缺缓存会整本重建
             - 下载失败页无限退避重试，不再作废
             - 烧录图迁到 filesDir，烧录缺失时回退气泡
-            - 解除 OkHttp 单 host 5 并发上限
-            - 图片请求去掉重复的 HTTP 磁盘缓存写入
-            - DNS 内存缓存、进度回调节流、预加载前 2 后 8
-          files: EhViewer_v1.3.4_full.apk
+            - 解除 OkHttp 单 host 5 并发上限、去掉图片重复磁盘缓存
+          files: EhViewer_v1.3.5_fix.apk
           draft: false
           prerelease: false

@@ -128,13 +128,7 @@ public final class BakedTranslationStore {
             Log.w(TAG, "No translated text on page " + index + ", skip baking");
             return false;
         }
-        Bitmap out;
-        try {
-            out = source.copy(Bitmap.Config.ARGB_8888, true);
-        } catch (Throwable t) {
-            Log.w(TAG, "copy bitmap failed: " + t.getMessage());
-            return false;
-        }
+        Bitmap out = copyForDraw(source);
         if (out == null) {
             return false;
         }
@@ -158,15 +152,39 @@ public final class BakedTranslationStore {
                 out.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, fos);
                 fos.flush();
             }
-            if (dest.exists() && !dest.delete()) {
-                Log.w(TAG, "Failed to delete old baked image");
+            // 先直接 rename：Linux 上 rename 是原子替换，中途被杀进程也不会丢文件。
+            // 只有 rename 失败（少数机型不允许覆盖）才退回"删除再重命名"。
+            if (!tmp.renameTo(dest)) {
+                if (dest.exists() && !dest.delete()) {
+                    Log.w(TAG, "Failed to delete old baked image");
+                }
+                return tmp.renameTo(dest);
             }
-            return tmp.renameTo(dest);
+            return true;
         } catch (Throwable t) {
             Log.w(TAG, "bake failed: " + t.getMessage());
             return false;
         } finally {
             out.recycle();
+        }
+    }
+
+    /**
+     * 复制一份可绘制的位图。2600px 的页面 ARGB_8888 大约 37MB，
+     * 低内存机型容易 OOM，失败时降级到 RGB_565（漫画多为黑白，画质损失可接受）。
+     */
+    @Nullable
+    private static Bitmap copyForDraw(@NonNull Bitmap source) {
+        try {
+            return source.copy(Bitmap.Config.ARGB_8888, true);
+        } catch (Throwable t) {
+            Log.w(TAG, "ARGB_8888 copy failed (" + t.getMessage() + "), fallback to RGB_565");
+        }
+        try {
+            return source.copy(Bitmap.Config.RGB_565, true);
+        } catch (Throwable t) {
+            Log.w(TAG, "copy bitmap failed: " + t.getMessage());
+            return null;
         }
     }
 
@@ -199,8 +217,14 @@ public final class BakedTranslationStore {
         tp.setTextSize(textSize);
         StaticLayout layout = buildLayout(text, tp, maxW);
 
-        // 背景按"原框"和"实际排版尺寸"取大者，保证文字不会被裁
-        float bgW = Math.max(box.width() + padX * 2f, layout.getWidth() + padX * 2f);
+        // 背景按"原框"和"实际排版尺寸"取大者，保证文字不会被裁。
+        // 注意 StaticLayout.getWidth() 返回的是构造时给的宽度 maxW，不是文字真正占的宽度；
+        // 直接拿它会画出一条和 maxW 一样宽的白条，把旁边的画面整块盖住。
+        float textW = 0f;
+        for (int i = 0; i < layout.getLineCount(); i++) {
+            textW = Math.max(textW, layout.getLineWidth(i));
+        }
+        float bgW = Math.max(box.width() + padX * 2f, textW + padX * 2f);
         float bgH = Math.max(box.height() + padY * 2f, layout.getHeight() + padY * 2f);
         bgW = Math.min(bgW, imgWidth - 2f);
         bgH = Math.min(bgH, imgHeight - 2f);

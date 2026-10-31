@@ -1223,8 +1223,13 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
                 }
                 boolean baked = false;
                 int countTemp = 0;
+                boolean recycleSafe = true;
                 try {
-                    List<MangaTextBlock> blocks = MangaOcrManager.getInstance().recognizePageSync(bitmap);
+                    MangaOcrManager.PageOcrResult ocr =
+                            MangaOcrManager.getInstance().recognizePageSync(bitmap);
+                    // 识别超时时 ML Kit 可能还在读这张 bitmap，不能回收
+                    recycleSafe = ocr.recycleSafe;
+                    List<MangaTextBlock> blocks = ocr.blocks;
                     countTemp = blocks.size();
                     if (blocks.isEmpty()) {
                         // 不要写空缓存：写进去之后 isPageProcessed 会返回 true，
@@ -1233,14 +1238,23 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
                                 R.string.translate_nothing, Toast.LENGTH_SHORT).show());
                         return;
                     }
-                    GoogleTranslator.translateBlocksSync(blocks);
+                    int translated = GoogleTranslator.translateBlocksSync(blocks);
+                    if (translated == 0) {
+                        // 整页一句都没译出来（限流/断网）：同样不能写缓存，
+                        // 否则这一页会被当成"已翻译"，以后再也不会重试。
+                        runOnUiThread(() -> Toast.makeText(GalleryActivity.this,
+                                "翻译失败，请检查网络后重试", Toast.LENGTH_SHORT).show());
+                        return;
+                    }
                     MangaTranslationCache.get(appContext).putPage(key, index, blocks);
                     // 直接把中文烧进图片，翻页/拖动/缩放都跟手
                     if (Settings.getBakedTranslation()) {
                         baked = BakedTranslationStore.bake(appContext, key, index, bitmap, blocks);
                     }
                 } finally {
-                    bitmap.recycle();
+                    if (recycleSafe) {
+                        bitmap.recycle();
+                    }
                 }
                 final boolean bakedOk = baked;
                 final int count = countTemp;
