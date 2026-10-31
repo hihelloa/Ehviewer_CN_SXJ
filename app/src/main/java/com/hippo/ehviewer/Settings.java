@@ -887,7 +887,8 @@ public class Settings {
     }
 
     private static final String KEY_MULTI_THREAD_DOWNLOAD = "download_thread";
-    private static final int DEFAULT_MULTI_THREAD_DOWNLOAD = 3;
+    // 提高默认并发：3 路在慢速链路上跑不满带宽，下载/翻页都显得很慢
+    private static final int DEFAULT_MULTI_THREAD_DOWNLOAD = 6;
 
     public static int getMultiThreadDownload() {
         return getIntFromStr(KEY_MULTI_THREAD_DOWNLOAD, DEFAULT_MULTI_THREAD_DOWNLOAD);
@@ -898,7 +899,7 @@ public class Settings {
     }
 
     private static final String KEY_PRELOAD_IMAGE = "preload_image";
-    private static final int DEFAULT_PRELOAD_IMAGE = 5;
+    private static final int DEFAULT_PRELOAD_IMAGE = 8;
 
     public static int getPreloadImage() {
         return getIntFromStr(KEY_PRELOAD_IMAGE, DEFAULT_PRELOAD_IMAGE);
