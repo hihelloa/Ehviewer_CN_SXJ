@@ -11,6 +11,8 @@ import com.alibaba.fastjson.JSONArray;
 import com.hippo.ehviewer.EhApplication;
 
 import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,6 +36,8 @@ public class GoogleTranslator {
     private static final String TRANSLATE_URL = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=";
     private static final int MAX_QUERY_LENGTH = 1500;
     private static final int MAX_RETRY = 3;
+    /** 批量请求的 UTF-8 字节上限：中文 URL 编码后约 9 字节/字，超了会 414。 */
+    private static final int MAX_BATCH_BYTES = 3500;
     /** 块之间的最小间隔，降低免费接口的突发速率，减少 429。 */
     private static final long BLOCK_INTERVAL_MS = 120L;
     private static final ExecutorService sExecutor = Executors.newFixedThreadPool(3);
@@ -144,12 +148,80 @@ public class GoogleTranslator {
     }
 
     /**
-     * 同步翻译一组文字块，逐块请求，相同原文只翻译一次。
+     * 同步翻译一组文字块。
+     *
+     * <p>优先把整页文字用换行拼接后一次性请求（一页通常只需 1 次网络往返），
+     * 只有行数对不上或请求失败时才回退到逐块翻译，兼顾速度与准确。
      * 必须在后台线程调用。翻译失败的文字块保留原文。
      *
      * @return 成功翻译的块数
      */
     public static int translateBlocksSync(@NonNull List<MangaTextBlock> blocks) {
+        if (blocks.isEmpty()) {
+            return 0;
+        }
+        int batch = translateBatch(blocks);
+        if (batch >= 0) {
+            return batch;
+        }
+        return translateBlocksOneByOne(blocks);
+    }
+
+    /**
+     * 整页批量翻译。成功返回翻译块数，需要回退时返回 -1。
+     */
+    private static int translateBatch(@NonNull List<MangaTextBlock> blocks) {
+        StringBuilder sb = new StringBuilder();
+        List<MangaTextBlock> valid = new ArrayList<>();
+        for (MangaTextBlock block : blocks) {
+            String original = block.originalText == null ? "" : block.originalText.trim();
+            if (original.isEmpty()) {
+                continue;
+            }
+            if (sb.length() > 0) {
+                sb.append('\n');
+            }
+            sb.append(original);
+            valid.add(block);
+        }
+        // 只有一块没必要批量；超长也回退，避免被截断后错位
+        if (valid.size() <= 1) {
+            return -1;
+        }
+        String joined = sb.toString();
+        if (joined.length() > MAX_QUERY_LENGTH
+                || joined.getBytes(StandardCharsets.UTF_8).length > MAX_BATCH_BYTES) {
+            return -1;
+        }
+        String translated = translateText(joined);
+        if (translated == null || translated.isEmpty()) {
+            return -1;
+        }
+        String[] lines = translated.split("\n", -1);
+        if (lines.length != valid.size()) {
+            // 行数被翻译接口改动，无法可靠对齐，回退逐块
+            Log.w(TAG, "batch line count mismatch: " + lines.length + " vs " + valid.size());
+            return -1;
+        }
+        int success = 0;
+        List<MangaTextBlock> failed = new ArrayList<>();
+        for (int i = 0; i < valid.size(); i++) {
+            String text = lines[i].trim();
+            if (!text.isEmpty()) {
+                valid.get(i).setTranslatedText(text);
+                success++;
+            } else {
+                failed.add(valid.get(i));
+            }
+        }
+        // 少数行没译出来，逐块补齐，避免整页里零星几句永远停在原文
+        if (!failed.isEmpty() && failed.size() <= valid.size() / 2) {
+            success += translateBlocksOneByOne(failed);
+        }
+        return success > 0 ? success : -1;
+    }
+
+    private static int translateBlocksOneByOne(@NonNull List<MangaTextBlock> blocks) {
         Map<String, String> memo = new HashMap<>();
         int success = 0;
         for (MangaTextBlock block : blocks) {
