@@ -16,6 +16,7 @@
 
 package com.hippo.lib.glgallery;
 
+import android.graphics.RectF;
 import com.hippo.lib.glview.glrenderer.BasicTexture;
 import com.hippo.lib.glview.glrenderer.Texture;
 import com.hippo.lib.glview.image.GLImageMovableTextView;
@@ -43,6 +44,10 @@ public class GalleryPageView extends GLFrameLayout {
     private final int mMinHeight;
 
     private int mIndex = INVALID_INDEX;
+
+    public RectF getImageDstRect() {
+        return mImage != null ? mImage.getImageDstRect() : null;
+    }
 
     public GalleryPageView(ImageMovableTextTexture pageTextTexture,
             int progressColor, int progressBgColor, int progressSize,

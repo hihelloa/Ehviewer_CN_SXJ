@@ -59,4 +59,40 @@
             android:inputType="numberDecimal"/>
 
     </com.google.android.material.textfield.TextInputLayout>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="本地客户端快捷预设 (Clash / v2rayNG / sing-box)："
+        android:textSize="12sp"
+        android:textColor="?android:attr/textColorSecondary" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btn_preset_clash"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="6dp"
+            android:textSize="11sp"
+            android:text="Clash (7890)" />
+
+        <Button
+            android:id="@+id/btn_preset_v2ray"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="6dp"
+            android:textSize="11sp"
+            android:text="v2rayNG (10808)" />
+
+    </LinearLayout>
 </LinearLayout>

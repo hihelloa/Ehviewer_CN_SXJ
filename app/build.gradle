@@ -184,6 +184,10 @@ dependencies {
     // 引入 Google 的弹性流式布局库
     implementation 'com.google.android.flexbox:flexbox:3.0.0'
 
+    // Google ML Kit Text Recognition (日文、中文与拉丁字母识别)
+    implementation 'com.google.mlkit:text-recognition-japanese:16.0.1'
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+
 
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.robolectric:robolectric:4.2.1'

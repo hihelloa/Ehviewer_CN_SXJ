@@ -19,6 +19,7 @@ package com.hippo.lib.glgallery;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.util.Log;
 import android.view.MotionEvent;
@@ -1053,6 +1054,14 @@ public final class GalleryView extends GLView implements GestureRecognizer.Liste
         } else {
             return null;
         }
+    }
+
+    public RectF findPageImageRect(int id) {
+        GalleryPageView page = findPageByIndex(id);
+        if (page != null) {
+            return page.getImageDstRect();
+        }
+        return null;
     }
 
     GalleryPageView obtainPage() {

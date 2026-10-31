@@ -121,6 +121,24 @@ public class ProxyPreference extends DialogPreference implements View.OnClickLis
             portString = Integer.toString(port);
         }
         mPort.setText(portString);
+
+        View btnClash = dialog.findViewById(R.id.btn_preset_clash);
+        if (btnClash != null) {
+            btnClash.setOnClickListener(v -> {
+                mType.setSelection(EhProxySelector.TYPE_HTTP);
+                mIp.setText("127.0.0.1");
+                mPort.setText("7890");
+            });
+        }
+
+        View btnV2ray = dialog.findViewById(R.id.btn_preset_v2ray);
+        if (btnV2ray != null) {
+            btnV2ray.setOnClickListener(v -> {
+                mType.setSelection(EhProxySelector.TYPE_SOCKS);
+                mIp.setText("127.0.0.1");
+                mPort.setText("10808");
+            });
+        }
     }
 
     @Override

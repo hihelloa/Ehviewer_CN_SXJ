@@ -48,6 +48,16 @@ import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.webkit.MimeTypeMap;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.RectF;
+import android.widget.Toast;
+import com.hippo.ehviewer.translation.GalleryTranslationOverlay;
+import com.hippo.ehviewer.translation.MangaOcrManager;
+import com.hippo.ehviewer.translation.MangaTextBlock;
+import com.hippo.util.IoThreadPoolExecutor;
+import java.io.File;
+import java.util.List;
 import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -165,6 +175,10 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
     @Nullable
     private ImageView mAutoTransferPanel;
     @Nullable
+    private View mBtnTranslate;
+    @Nullable
+    private GalleryTranslationOverlay mTranslationOverlay;
+    @Nullable
     private TextView mLeftText;
     @Nullable
     private TextView mRightText;
@@ -173,6 +187,7 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
 
     private ObjectAnimator mSeekBarPanelAnimator;
     private ObjectAnimator mAutoTransferAnimator;
+    private ObjectAnimator mBtnTranslateAnimator;
 
     private int mLayoutMode;
     private int mSize;
@@ -195,6 +210,9 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             if (null != mAutoTransferPanel) {
                 mAutoTransferPanel.requestLayout();
             }
+            if (null != mBtnTranslate) {
+                mBtnTranslate.requestLayout();
+            }
         }
     };
 
@@ -203,6 +221,7 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         public void onAnimationEnd(Animator animation) {
             mSeekBarPanelAnimator = null;
             mAutoTransferAnimator = null;
+            mBtnTranslateAnimator = null;
         }
     };
 
@@ -217,6 +236,10 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             if (mAutoTransferPanel != null) {
                 mAutoTransferPanel.setVisibility(View.INVISIBLE);
             }
+            mBtnTranslateAnimator = null;
+            if (mBtnTranslate != null) {
+                mBtnTranslate.setVisibility(View.INVISIBLE);
+            }
         }
     };
 
@@ -226,6 +249,7 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             if (mSeekBarPanel != null) {
                 hideSlider(mSeekBarPanel, mSeekBarPanelAnimator);
                 hideSlider(mAutoTransferPanel, mAutoTransferAnimator);
+                hideSlider(mBtnTranslate, mBtnTranslateAnimator);
             }
         }
     };
@@ -405,6 +429,13 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         mSeekBar.setOnSeekBarChangeListener(this);
         mAutoTransferPanel.setOnClickListener(this::autoRead);
 
+        mTranslationOverlay = findViewById(R.id.translation_overlay);
+        mBtnTranslate = findViewById(R.id.btn_translate);
+        if (mBtnTranslate != null) {
+            mBtnTranslate.setVisibility(View.INVISIBLE);
+            mBtnTranslate.setOnClickListener(v -> translateCurrentPage());
+        }
+
         mSize = mGalleryProvider.size();
         mCurrentIndex = startPage;
         if (mGalleryView != null) {
@@ -515,6 +546,8 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         mBattery = null;
         mSeekBarPanel = null;
         mAutoTransferPanel = null;
+        mBtnTranslate = null;
+        mTranslationOverlay = null;
         mLeftText = null;
         mRightText = null;
         mSeekBar = null;
@@ -866,10 +899,13 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
 
 
     private void showSlider(View sliderPanel, ObjectAnimator animator) {
-        if (null != mSeekBarPanelAnimator) {
+        if (null == sliderPanel) {
+            return;
+        }
+        if (null != animator) {
             animator.cancel();
         }
-        if (sliderPanel == mAutoTransferPanel) {
+        if (sliderPanel == mAutoTransferPanel || sliderPanel == mBtnTranslate) {
             sliderPanel.setTranslationX(sliderPanel.getWidth());
             animator = ObjectAnimator.ofFloat(sliderPanel, "translationX", 0.0f);
         } else {
@@ -878,7 +914,6 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         }
 
         sliderPanel.setVisibility(View.VISIBLE);
-
 
         animator.setDuration(SLIDER_ANIMATION_DURING);
         animator.setInterpolator(AnimationUtils.FAST_SLOW_INTERPOLATOR);
@@ -892,12 +927,14 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         }
     }
 
-
     private void hideSlider(View sliderPanel, ObjectAnimator animator) {
+        if (null == sliderPanel) {
+            return;
+        }
         if (null != animator) {
             animator.cancel();
         }
-        if (sliderPanel == mAutoTransferPanel) {
+        if (sliderPanel == mAutoTransferPanel || sliderPanel == mBtnTranslate) {
             animator = ObjectAnimator.ofFloat(sliderPanel, "translationX", sliderPanel.getWidth());
         } else {
             animator = ObjectAnimator.ofFloat(sliderPanel, "translationY", sliderPanel.getHeight());
@@ -913,6 +950,88 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             mSystemUiHelper.hide();
             mShowSystemUi = false;
         }
+    }
+
+    private void translateCurrentPage() {
+        if (mGalleryProvider == null) {
+            Toast.makeText(this, "阅读器未初始化", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (mCurrentIndex < 0 || mCurrentIndex >= mSize) {
+            Toast.makeText(this, "当前页码无效", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // 如果当前页已经翻译过，再次点击切换气泡显隐
+        if (mTranslationOverlay != null && mTranslationOverlay.getCurrentPageIndex() == mCurrentIndex && mTranslationOverlay.hasData()) {
+            boolean visible = mTranslationOverlay.getVisibility() == View.VISIBLE;
+            mTranslationOverlay.setVisibility(visible ? View.GONE : View.VISIBLE);
+            Toast.makeText(this, visible ? "已隐藏翻译气泡" : "已恢复翻译气泡", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        Toast.makeText(this, "正在提取并翻译第 " + (mCurrentIndex + 1) + " 页漫画...", Toast.LENGTH_SHORT).show();
+
+        final int targetIndex = mCurrentIndex;
+        IoThreadPoolExecutor.Companion.getInstance().execute(() -> {
+            try {
+                File cacheDir = getCacheDir();
+                File tempFile = new File(cacheDir, "manga_trans_cache.jpg");
+                if (tempFile.exists()) {
+                    tempFile.delete();
+                }
+                boolean saved = mGalleryProvider.save(targetIndex, UniFile.fromFile(tempFile));
+                if (!saved || !tempFile.exists() || tempFile.length() <= 0) {
+                    runOnUiThread(() -> Toast.makeText(GalleryActivity.this, "当前页面尚未加载完成，请稍后再试", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+
+                Bitmap bitmap = BitmapFactory.decodeFile(tempFile.getAbsolutePath());
+                if (bitmap == null) {
+                    runOnUiThread(() -> Toast.makeText(GalleryActivity.this, "图片解码失败", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+
+                runOnUiThread(() -> {
+                    RectF pageRect = null;
+                    if (mGalleryView != null) {
+                        pageRect = mGalleryView.findPageImageRect(targetIndex);
+                    }
+                    if (pageRect == null || pageRect.isEmpty()) {
+                        int viewW = mGLRootView != null ? mGLRootView.getWidth() : getResources().getDisplayMetrics().widthPixels;
+                        int viewH = mGLRootView != null ? mGLRootView.getHeight() : getResources().getDisplayMetrics().heightPixels;
+                        float scale = Math.min((float) viewW / bitmap.getWidth(), (float) viewH / bitmap.getHeight());
+                        float w = bitmap.getWidth() * scale;
+                        float h = bitmap.getHeight() * scale;
+                        pageRect = new RectF((viewW - w) / 2f, (viewH - h) / 2f, (viewW + w) / 2f, (viewH + h) / 2f);
+                    }
+
+                    final RectF finalPageRect = pageRect;
+                    MangaOcrManager.getInstance().processPageBitmap(bitmap, new MangaOcrManager.OcrCallback() {
+                        @Override
+                        public void onSuccess(@NonNull List<MangaTextBlock> blocks) {
+                            if (blocks.isEmpty()) {
+                                Toast.makeText(GalleryActivity.this, "本页未检测到明显文字", Toast.LENGTH_SHORT).show();
+                            } else {
+                                if (mTranslationOverlay != null) {
+                                    mTranslationOverlay.setVisibility(View.VISIBLE);
+                                    mTranslationOverlay.setPageData(targetIndex, blocks, finalPageRect);
+                                }
+                                Toast.makeText(GalleryActivity.this, "翻译完成，已覆盖 " + blocks.size() + " 处气泡（点击气泡可显隐）", Toast.LENGTH_SHORT).show();
+                            }
+                        }
+
+                        @Override
+                        public void onFailure(@NonNull String error) {
+                            Toast.makeText(GalleryActivity.this, error, Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                });
+            } catch (Throwable t) {
+                Log.e("GalleryActivity", "translateCurrentPage error: " + t.getMessage(), t);
+                runOnUiThread(() -> Toast.makeText(GalleryActivity.this, "翻译处理异常: " + t.getMessage(), Toast.LENGTH_SHORT).show());
+            }
+        });
     }
 
     /**
@@ -1373,9 +1492,11 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             if (mSeekBarPanel.getVisibility() == View.VISIBLE) {
                 hideSlider(mSeekBarPanel, mSeekBarPanelAnimator);
                 hideSlider(mAutoTransferPanel, mAutoTransferAnimator);
+                hideSlider(mBtnTranslate, mBtnTranslateAnimator);
             } else {
                 showSlider(mSeekBarPanel, mSeekBarPanelAnimator);
                 showSlider(mAutoTransferPanel, mAutoTransferAnimator);
+                showSlider(mBtnTranslate, mBtnTranslateAnimator);
                 SimpleHandler.getInstance().postDelayed(mHideSliderRunnable, HIDE_SLIDER_DELAY);
             }
         }
@@ -1404,6 +1525,9 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
                     break;
                 case KEY_CURRENT_INDEX:
                     GalleryActivity.this.mCurrentIndex = mValue;
+                    if (mTranslationOverlay != null && mTranslationOverlay.getCurrentPageIndex() != mValue) {
+                        mTranslationOverlay.clear();
+                    }
                     updateSlider();
                     updateProgress();
                     break;

@@ -1363,40 +1363,38 @@ public final class SpiderQueen implements Runnable {
                 String targetImageUrl;
                 String referer;
                 referer = EhUrl.getPageUrl(gid, index, pToken);
+                boolean triedOrigin = false;
                 if (Settings.getDownloadOriginImage() && !TextUtils.isEmpty(originImageUrl)) {
+                    triedOrigin = true;
                     targetImageUrl = originImageUrl;
-//                    String refNew;
-//                    if (targetImageUrl.contains("?")) {
-//                        refNew = referer + "&nl=" + skipHathKey;
-//                    } else {
-//                        refNew = referer + "?nl=" + skipHathKey;
-//                    }
-                    if (targetImageUrl.contains("?")) {
-                        targetImageUrl = targetImageUrl + "&nl=" + skipHathKey;
-                    } else {
-                        targetImageUrl = targetImageUrl + "?nl=" + skipHathKey;
-                    }
-
-                    Call call = mHttpImageClient.newBuilder()
-                            .callTimeout(30, TimeUnit.SECONDS).build()
-                            .newCall(new EhRequestBuilder(targetImageUrl, referer).build());
-                    Response response;
                     try {
-                        response = call.execute();
-                        targetImageUrl = response.header("location");
-                    } catch (IOException | NoSuchElementException e) {
-                        error = "GP不足/Insufficient GP";
-                        IOException ioException = new IOException("原图链接获取失败", e);
-                        Analytics.recordException(ioException);
-                        break;
+                        Call call = mHttpImageClient.newBuilder()
+                                .callTimeout(30, TimeUnit.SECONDS).build()
+                                .newCall(new EhRequestBuilder(targetImageUrl, referer).build());
+                        Response response = call.execute();
+                        String location = response.header("location");
+                        if (location != null && !location.isEmpty()) {
+                            targetImageUrl = location;
+                        } else if (response.isSuccessful() && response.body() != null) {
+                            // Direct original image
+                        } else {
+                            // Fallback to normal image
+                            Log.w(TAG, "Original image unavailable (code " + response.code() + "), falling back to resized image");
+                            targetImageUrl = imageUrl;
+                        }
+                    } catch (Throwable e) {
+                        Log.w(TAG, "Original image download failed, falling back to standard image: " + e.getMessage());
+                        targetImageUrl = imageUrl;
                     }
                 } else {
                     targetImageUrl = imageUrl;
                 }
 
                 if (targetImageUrl == null) {
-                    error = "GP不足/Insufficient GP";
-                    break;
+                    // Fallback to html refresh
+                    forceHtml = true;
+                    error = "Image url unavailable, refreshing...";
+                    continue;
                 }
                 if (DEBUG_LOG) {
                     Log.d(TAG, targetImageUrl);
@@ -1405,37 +1403,34 @@ public final class SpiderQueen implements Runnable {
                 // Download image
                 InputStream is = null;
                 try {
-
                     if (DEBUG_LOG) {
                         Log.d(TAG, "Start download image " + index);
                     }
 
-                    // disable Call Timeout for image-downloading requests
                     Call call = mHttpClient.newBuilder()
                             .callTimeout(downloadTimeout, TimeUnit.SECONDS).build()
                             .newCall(new EhRequestBuilder(targetImageUrl, referer).build());
-                    Response response = call.execute();
-                    ResponseBody responseBody = response.body();
-
-                    String responseUrl = null;
-                    if (response.networkResponse() != null) {
-                        responseUrl = response.networkResponse().request().url().toString();
-                    } else if (response.cacheResponse() != null) {
-                        responseUrl = response.cacheResponse().request().url().toString();
-                    }
-                    // 反劫持校验
-                    if (!targetImageUrl.equals(responseUrl)) {
-                        error = "链接疑似被劫持\nThe link is suspected to be hijacked";
-                        response.close();
+                    Response response;
+                    try {
+                        response = call.execute();
+                    } catch (IOException netErr) {
+                        Log.w(TAG, "Network error downloading image " + index + ": " + netErr.getMessage());
+                        error = ExceptionUtils.getReadableString(netErr);
                         forceHtml = true;
+                        try {
+                            Thread.sleep(600);
+                        } catch (InterruptedException ignored) {}
                         continue;
                     }
 
+                    ResponseBody responseBody = response.body();
                     if (response.code() >= 400) {
-                        // Maybe 404
                         response.close();
                         error = "Bad code: " + response.code();
                         forceHtml = true;
+                        try {
+                            Thread.sleep(500);
+                        } catch (InterruptedException ignored) {}
                         continue;
                     }
 

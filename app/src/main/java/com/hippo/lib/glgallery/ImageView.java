@@ -73,6 +73,10 @@ class ImageView extends GLView implements ImageTexture.Callback {
         mAlphaAnimation.setInterpolator(AnimationUtils.FAST_SLOW_INTERPOLATOR);
     }
 
+    public RectF getImageDstRect() {
+        return new RectF(mDst);
+    }
+
     public static int sanitizeScaleMode(int scaleMode) {
         if (scaleMode != SCALE_ORIGIN &&
                 scaleMode != SCALE_FIT_WIDTH &&
