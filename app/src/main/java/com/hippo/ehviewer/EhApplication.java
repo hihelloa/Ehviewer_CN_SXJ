@@ -97,6 +97,7 @@ import javax.net.ssl.X509TrustManager;
 import okhttp3.Cache;
 import okhttp3.ConnectionPool;
 import okhttp3.ConnectionSpec;
+import okhttp3.Dispatcher;
 import okhttp3.OkHttpClient;
 import okhttp3.Response;
 
@@ -125,6 +126,9 @@ public class EhApplication extends RecordingApplication {
     private OkHttpClient mOkHttpClient;
     private OkHttpClient mImageOkHttpClient;
     private Cache mOkHttpCache;
+    // 两个客户端共享，避免各自持有一份连接池导致重复建连
+    private static volatile Dispatcher sDispatcher;
+    private static volatile ConnectionPool sConnectionPool;
     private ImageBitmapHelper mImageBitmapHelper;
     private Conaco<Image> mConaco;
     private LruCache<Long, GalleryDetail> mGalleryDetailCache;
@@ -374,21 +378,49 @@ public class EhApplication extends RecordingApplication {
         return application.mEhProxySelector;
     }
 
+    /**
+     * 全应用共享一个 Dispatcher。OkHttp 默认 maxRequestsPerHost = 5，
+     * 会把"下载线程数 6 / 预加载 8"这些设置全部卡在 5 个并发上，
+     * 表现就是下载和翻页都慢。这里把上限放开，实际并发仍由业务侧的线程数控制。
+     */
+    private static Dispatcher getSharedDispatcher() {
+        Dispatcher dispatcher = sDispatcher;
+        if (dispatcher == null) {
+            synchronized (EhApplication.class) {
+                dispatcher = sDispatcher;
+                if (dispatcher == null) {
+                    dispatcher = new Dispatcher();
+                    dispatcher.setMaxRequests(128);
+                    dispatcher.setMaxRequestsPerHost(24);
+                    sDispatcher = dispatcher;
+                }
+            }
+        }
+        return dispatcher;
+    }
+
+    /**
+     * 共享连接池。默认只有 5 个空闲连接，并发下载时连接刚释放就被新请求抢走，
+     * 频繁 TCP + TLS 握手会显著拖慢每页图片。
+     */
+    private static ConnectionPool getSharedConnectionPool() {
+        ConnectionPool pool = sConnectionPool;
+        if (pool == null) {
+            synchronized (EhApplication.class) {
+                pool = sConnectionPool;
+                if (pool == null) {
+                    pool = new ConnectionPool(32, 5, TimeUnit.MINUTES);
+                    sConnectionPool = pool;
+                }
+            }
+        }
+        return pool;
+    }
+
     @NonNull
     public static OkHttpClient getOkHttpClient(@NonNull Context context) {
         EhApplication application = ((EhApplication) context.getApplicationContext());
         if (application.mOkHttpClient == null) {
-//            Dispatcher dispatcher = new Dispatcher();
-//            dispatcher.setMaxRequestsPerHost(4);
-            
-            // 创建优化的连接池 - 针对后台下载优化
-            // 最多保持 10 个连接，每个连接保持 5 分钟，适合后台长时间下载
-            ConnectionPool connectionPool = new ConnectionPool(
-                    10,  // 最大空闲连接数
-                    5,   // 连接保活时间（分钟）
-                    TimeUnit.MINUTES
-            );
-            
             OkHttpClient.Builder builder = new OkHttpClient.Builder()
                     .followRedirects(true)
                     .followSslRedirects(true)
@@ -398,7 +430,8 @@ public class EhApplication extends RecordingApplication {
                     .readTimeout(60, TimeUnit.SECONDS)
                     .writeTimeout(30, TimeUnit.SECONDS)
 //                    .callTimeout(10, TimeUnit.SECONDS)
-                    .connectionPool(connectionPool)  // 添加优化的连接池
+                    .connectionPool(getSharedConnectionPool())
+                    .dispatcher(getSharedDispatcher())
                     .retryOnConnectionFailure(true)  // 连接失败时重试
                     .cookieJar(getEhCookieStore(application))
                     .cache(getOkHttpCache(application))
@@ -414,12 +447,16 @@ public class EhApplication extends RecordingApplication {
                     })
                     .addNetworkInterceptor(chain -> {
                         Response response = chain.proceed(chain.request());
-                        // 同步Cookie到WebView
-                        if (response.headers("Set-Cookie") != null) {
+                        // 同步Cookie到WebView。
+                        // 注意 headers() 永远返回非 null，原来那个 null 判断恒为 true，
+                        // 结果每个响应（包括每一页图片）都白跑一次 CookieManager.flush()，
+                        // 而 flush 是同步写盘，慢链路上这一下就够呛。改成真的判空。
+                        List<String> setCookies = response.headers("Set-Cookie");
+                        if (setCookies != null && !setCookies.isEmpty()) {
                             try {
                                 CookieManager cookieManager = CookieManager.getInstance();
                                 String url = chain.request().url().toString();
-                                for (String header : response.headers("Set-Cookie")) {
+                                for (String header : setCookies) {
                                     cookieManager.setCookie(url, header);
                                 }
                                 cookieManager.flush();
@@ -487,8 +524,14 @@ public class EhApplication extends RecordingApplication {
                     .writeTimeout(30, TimeUnit.SECONDS)
                     // 大图在慢速链路上 20 秒根本下不完
                     .callTimeout(180, TimeUnit.SECONDS)
+                    .connectionPool(getSharedConnectionPool())
+                    .dispatcher(getSharedDispatcher())
+                    .retryOnConnectionFailure(true)
                     .cookieJar(getEhCookieStore(application))
-                    .cache(getOkHttpCache(application))
+                    // 注意：这里刻意不挂 HTTP 磁盘缓存。图片本身已经落盘到
+                    // SpiderDen，再走一层 OkHttp Cache 会让每张图多写一遍
+                    // （写放大 100%），慢链路上等于下载时间翻倍。
+//                    .cache(getOkHttpCache(application))
 //                    .hostnameVerifier((hostname, session) -> true)
                     .dns(new EhHosts(application))
                     .addNetworkInterceptor(sprocket -> {

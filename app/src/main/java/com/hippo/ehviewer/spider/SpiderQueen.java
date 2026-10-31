@@ -49,6 +49,8 @@ import com.hippo.ehviewer.client.parser.GalleryPageApiParser;
 import com.hippo.ehviewer.client.parser.GalleryPageParser;
 import com.hippo.ehviewer.client.parser.GalleryPageUrlParser;
 import com.hippo.ehviewer.gallery.GalleryProvider2;
+import com.hippo.ehviewer.translation.BakedTranslationStore;
+import com.hippo.ehviewer.translation.MangaTranslationCache;
 import com.hippo.lib.glgallery.GalleryPageView;
 import com.hippo.lib.glgallery.GalleryProvider;
 import com.hippo.lib.image.Image;
@@ -127,6 +129,8 @@ public final class SpiderQueen implements Runnable {
     private final GalleryInfo mGalleryInfo;
     @NonNull
     private final SpiderDen mSpiderDen;
+    @NonNull
+    private final Context mAppContext;
     private final Object mQueenLock = new Object();
     private final Thread[] mDecodeThreadArray = new Thread[DECODE_THREAD_NUM];
     private final int[] mDecodeIndexArray = new int[DECODE_THREAD_NUM];
@@ -170,6 +174,7 @@ public final class SpiderQueen implements Runnable {
     private long receiveBytesBefore;
 
     private SpiderQueen(EhApplication application, @NonNull GalleryInfo galleryInfo) {
+        mAppContext = application.getApplicationContext();
         mHttpClient = EhApplication.getOkHttpClient(application);
         mHttpImageClient = EhApplication.getImageOkHttpClient(application);
         mSpiderInfoCache = EhApplication.getSpiderInfoCache(application);
@@ -612,7 +617,14 @@ public final class SpiderQueen implements Runnable {
                 } else {
                     size = Integer.MAX_VALUE;
                 }
-                for (int i = index + 1, n = index + 1 + mPreloadNumber; i < n && i < size; i++) {
+                // 前后都预载：原来只预载 index+1..index+N，
+                // 往回翻一页就得重新等下载，观感上就是"往回翻特别卡"。
+                int start = Math.max(0, index - 2);
+                int end = Math.min(size, index + 1 + mPreloadNumber);
+                for (int i = start; i < end; i++) {
+                    if (i == index) {
+                        continue;
+                    }
                     if (STATE_NONE == getPageState(i)) {
                         mRequestPageQueue2.add(i);
                     }
@@ -1407,7 +1419,7 @@ public final class SpiderQueen implements Runnable {
                         Log.d(TAG, "Start download image " + index);
                     }
 
-                    Call call = mHttpClient.newBuilder()
+                    Call call = mHttpImageClient.newBuilder()
                             .callTimeout(downloadTimeout, TimeUnit.SECONDS).build()
                             .newCall(new EhRequestBuilder(targetImageUrl, referer).build());
                     Response response;
@@ -1470,8 +1482,14 @@ public final class SpiderQueen implements Runnable {
                         osPipe.obtain();
                         OutputStream os = osPipe.open();
 
-                        final byte[] data = new byte[1024 * 4];
+                        final byte[] data = new byte[64 * 1024];
                         long receivedSize = 0;
+                        // 进度节流：原来每 4KB 就往主线程 post 一次 NotifyTask，
+                        // 一张 3MB 的图会产生 700+ 次回调，主线程被进度刷新打满，
+                        // 下载本身和列表滑动都跟着卡。改成 1% 或 256KB 通知一次。
+                        int lastPercent = -1;
+                        long lastNotifySize = 0;
+                        long pendingBytes = 0;
 
                         while (!Thread.currentThread().isInterrupted()) {
                             int bytesRead = is.read(data);
@@ -1481,9 +1499,20 @@ public final class SpiderQueen implements Runnable {
                             }
                             os.write(data, 0, bytesRead);
                             receivedSize += bytesRead;
+                            pendingBytes += bytesRead;
+                            boolean notify = false;
                             // Update page percent
                             if (contentLength > 0) {
-                                mPagePercentMap.put(index, (float) receivedSize / contentLength);
+                                int percent = (int) (receivedSize * 100 / contentLength);
+                                if (percent != lastPercent) {
+                                    lastPercent = percent;
+                                    mPagePercentMap.put(index, (float) receivedSize / contentLength);
+                                    notify = true;
+                                }
+                            }
+                            if (receivedSize - lastNotifySize >= 256 * 1024) {
+                                lastNotifySize = receivedSize;
+                                notify = true;
                             }
                             if (receivedSize == receiveBytesBefore) {
                                 if (downloadSpeedZeroTimeCount == null) {
@@ -1505,7 +1534,12 @@ public final class SpiderQueen implements Runnable {
                                 receiveBytesBefore = receivedSize;
                             }
                             // Notify listener
-                            notifyPageDownload(index, contentLength, receivedSize, bytesRead);
+                            if (notify) {
+                                // 传自上次通知以来累计的字节数，保证速度统计不被节流拉低
+                                notifyPageDownload(index, contentLength, receivedSize,
+                                        (int) Math.min(pendingBytes, Integer.MAX_VALUE));
+                                pendingBytes = 0;
+                            }
                         }
                         os.flush();
 
@@ -1841,6 +1875,19 @@ public final class SpiderQueen implements Runnable {
                     resetDecodeIndex();
                     notifyGetImageFailure(index, GetText.getString(R.string.error_out_of_range));
                     continue;
+                }
+
+                // 该页已烧录译文时直接解码汉化图，跳过原图解码。
+                // 原实现是在 EhGalleryProvider 回调里再解一次再丢掉原图，
+                // 等于每页解码两遍，翻页自然慢。
+                if (Settings.getBakedTranslation() && mGalleryInfo.gid > 0) {
+                    Image baked = BakedTranslationStore.decode(mAppContext,
+                            MangaTranslationCache.keyForGid(mGalleryInfo.gid), index);
+                    if (baked != null) {
+                        notifyGetImageSuccess(index, baked);
+                        resetDecodeIndex();
+                        continue;
+                    }
                 }
 
                 InputStreamPipe pipe = mSpiderDen.openInputStreamPipe(index);

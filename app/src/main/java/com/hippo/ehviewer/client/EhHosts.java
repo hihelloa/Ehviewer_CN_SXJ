@@ -23,6 +23,7 @@ package com.hippo.ehviewer.client;
 import android.content.Context;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.hippo.ehviewer.EhApplication;
 import com.hippo.ehviewer.Hosts;
@@ -34,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -122,6 +124,29 @@ public class EhHosts implements Dns {
     private final Hosts hosts;
     private static DnsOverHttps dnsOverHttps;
 
+    // DNS 结果内存缓存。原来每次新建连接都要查一次 SQLite（hosts.getList），
+    // 没命中再造一次系统 DNS / DoH。H@H 每页图片的域名都不一样，
+    // 一本漫画下来几百次解析，单次几百毫秒就直接体现在"看图慢、下载慢"上。
+    private static final long DNS_CACHE_TTL_MS = 10 * 60 * 1000L;
+    private static final int DNS_CACHE_MAX = 512;
+    private static final Map<String, DnsCacheEntry> DNS_CACHE =
+            Collections.synchronizedMap(new LinkedHashMap<String, DnsCacheEntry>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, DnsCacheEntry> eldest) {
+                    return size() > DNS_CACHE_MAX;
+                }
+            });
+
+    private static final class DnsCacheEntry {
+        final List<InetAddress> addresses;
+        final long expireAt;
+
+        DnsCacheEntry(List<InetAddress> addresses, long expireAt) {
+            this.addresses = addresses;
+            this.expireAt = expireAt;
+        }
+    }
+
     public EhHosts(Context context) {
         hosts = EhApplication.getHosts(context);
         DnsOverHttps.Builder builder = new DnsOverHttps.Builder()
@@ -142,14 +167,49 @@ public class EhHosts implements Dns {
     @NonNull
     @Override
     public List<InetAddress> lookup(@NonNull String hostname) throws UnknownHostException {
+        List<InetAddress> cached = getFromCache(hostname);
+        if (cached != null) {
+            return cached;
+        }
+        List<InetAddress> result = lookupFromSource(hostname);
+        putToCache(hostname, result);
+        return result;
+    }
+
+    @Nullable
+    private List<InetAddress> getFromCache(String hostname) {
+        DnsCacheEntry entry = DNS_CACHE.get(hostname);
+        if (entry == null) {
+            return null;
+        }
+        if (System.currentTimeMillis() > entry.expireAt) {
+            DNS_CACHE.remove(hostname);
+            return null;
+        }
+        return new ArrayList<>(entry.addresses);
+    }
+
+    private void putToCache(String hostname, List<InetAddress> addresses) {
+        if (addresses == null || addresses.isEmpty()) {
+            return;
+        }
+        DNS_CACHE.put(hostname, new DnsCacheEntry(new ArrayList<>(addresses),
+                System.currentTimeMillis() + DNS_CACHE_TTL_MS));
+    }
+
+    @NonNull
+    private List<InetAddress> lookupFromSource(@NonNull String hostname) throws UnknownHostException {
         List<InetAddress> inetAddresses = hosts.getList(hostname);
         if (inetAddresses != null && !inetAddresses.isEmpty()) {
             Collections.shuffle(inetAddresses, new Random(System.currentTimeMillis()));
             return inetAddresses;
         }
-        if (Settings.getBuiltInHosts() || Settings.getBuiltEXHosts()) {
+        if (Settings.getBuiltInHosts() || Settings.getBuiltInEXHosts()) {
             inetAddresses = builtInHosts.get(hostname);
             if (inetAddresses != null) {
+                // 复制一份再打乱：builtInHosts 是静态共享的，
+                // 并发下载时多个 worker 同时 shuffle 同一个 ArrayList 会越界。
+                inetAddresses = new ArrayList<>(inetAddresses);
                 Collections.shuffle(inetAddresses, new Random(System.currentTimeMillis()));
                 return inetAddresses;
             }
