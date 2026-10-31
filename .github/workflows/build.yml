@@ -44,7 +44,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           chmod +x ./gradlew
-          ./gradlew app:assembleAppReleaseRelease -x lintVitalRelease --stacktrace
+          ./gradlew app:assembleAppReleaseRelease -x lintVitalAppReleaseRelease --stacktrace
 
       - name: Rename APK
         run: |
