@@ -23,6 +23,9 @@ import com.hippo.ehviewer.client.data.GalleryInfo;
 import com.hippo.ehviewer.spider.SpiderQueen;
 import com.hippo.lib.glgallery.GalleryProvider;
 import com.hippo.lib.image.Image;
+import com.hippo.ehviewer.Settings;
+import com.hippo.ehviewer.translation.BakedTranslationStore;
+import com.hippo.ehviewer.translation.MangaTranslationCache;
 //import com.hippo.lib.image.Image1;
 import com.hippo.unifile.UniFile;
 import com.hippo.lib.yorozuya.SimpleHandler;
@@ -187,6 +190,17 @@ public class EhGalleryProvider extends GalleryProvider2 implements SpiderQueen.O
 
     @Override
     public void onGetImageSuccess(int index, Image image) {
+        // 已烧录译文的页直接用"汉化图"替换原图：
+        // 文字成为画面像素，拖动/缩放/翻页完全跟手，不会残留错位。
+        if (Settings.getBakedTranslation() && mGalleryInfo != null && mGalleryInfo.gid > 0) {
+            String key = MangaTranslationCache.keyForGid(mGalleryInfo.gid);
+            Image baked = BakedTranslationStore.decode(mContext, key, index);
+            if (baked != null) {
+                notifyPageSucceed(index, baked);
+                image.recycle();
+                return;
+            }
+        }
         notifyPageSucceed(index, image);
     }
 

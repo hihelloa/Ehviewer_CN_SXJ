@@ -7,6 +7,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import com.hippo.ehviewer.Settings;
+
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
@@ -174,11 +176,19 @@ public class BatchMangaTranslator {
                 }
                 task.currentIndex = index;
 
-                // 已有缓存则跳过
+                // 已有译文缓存：正常情况下跳过；
+                // 但若这页还没烧录成"汉化图"，需要再取一次图补烧录。
+                List<MangaTextBlock> cachedBlocks = null;
                 if (cache.isPageProcessed(key, index)) {
-                    task.finished++;
-                    postProgress(task);
-                    continue;
+                    if (Settings.getBakedTranslation()
+                            && !BakedTranslationStore.has(task.appContext, key, index)) {
+                        cachedBlocks = cache.getPage(key, index);
+                    }
+                    if (cachedBlocks == null || cachedBlocks.isEmpty()) {
+                        task.finished++;
+                        postProgress(task);
+                        continue;
+                    }
                 }
 
                 File tempFile = new File(task.appContext.getCacheDir(),
@@ -224,25 +234,32 @@ public class BatchMangaTranslator {
                         postProgress(task);
                         continue;
                     }
-                    List<MangaTextBlock> blocks;
                     try {
-                        blocks = MangaOcrManager.getInstance().recognizeSync(bitmap);
+                        List<MangaTextBlock> blocks = cachedBlocks != null
+                                ? cachedBlocks
+                                : MangaOcrManager.getInstance().recognizeSync(bitmap);
+                        int translated = cachedBlocks != null
+                                ? cachedBlocks.size()
+                                : GoogleTranslator.translateBlocksSync(blocks);
+                        if (!blocks.isEmpty() && translated == 0) {
+                            // 整页翻译全部失败（限流/断网），不要写缓存，否则该页会永久停留在原文
+                            Log.w(TAG, "Page " + index + " translation all failed, will retry later");
+                            task.failed++;
+                            task.finished++;
+                            postProgress(task);
+                            continue;
+                        }
+                        cache.putPage(key, index, blocks);
+                        // 译文直接烧进图片，阅读时就是"汉化图"，拖动缩放完全跟手
+                        if (Settings.getBakedTranslation()) {
+                            BakedTranslationStore.bake(task.appContext, key, index, bitmap, blocks);
+                        }
+                        task.finished++;
+                        postPage(key, index, blocks);
+                        postProgress(task);
                     } finally {
                         bitmap.recycle();
                     }
-                    int translated = GoogleTranslator.translateBlocksSync(blocks);
-                    if (!blocks.isEmpty() && translated == 0) {
-                        // 整页翻译全部失败（限流/断网），不要写缓存，否则该页会永久停留在原文
-                        Log.w(TAG, "Page " + index + " translation all failed, will retry later");
-                        task.failed++;
-                        task.finished++;
-                        postProgress(task);
-                        continue;
-                    }
-                    cache.putPage(key, index, blocks);
-                    task.finished++;
-                    postPage(key, index, blocks);
-                    postProgress(task);
                 } catch (Throwable t) {
                     Log.e(TAG, "Translate page " + index + " failed: " + t.getMessage(), t);
                     task.failed++;

@@ -701,6 +701,18 @@ public class Settings {
         putBoolean(KEY_AUTO_SHOW_TRANSLATION, value);
     }
 
+    private static final String KEY_BAKED_TRANSLATION = "gallery_baked_translation";
+    private static final boolean DEFAULT_BAKED_TRANSLATION = true;
+
+    /** 译文直接烧录进漫画画面（拖动缩放完全跟手），而非悬浮气泡 */
+    public static boolean getBakedTranslation() {
+        return getBoolean(KEY_BAKED_TRANSLATION, DEFAULT_BAKED_TRANSLATION);
+    }
+
+    public static void putBakedTranslation(boolean value) {
+        putBoolean(KEY_BAKED_TRANSLATION, value);
+    }
+
     private static final String KEY_SHOW_PAGE_INTERVAL = "gallery_show_page_interval";
     private static final boolean DEFAULT_SHOW_PAGE_INTERVAL = true;
 

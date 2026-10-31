@@ -52,6 +52,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.RectF;
 import android.widget.Toast;
+import com.hippo.ehviewer.translation.BakedTranslationStore;
 import com.hippo.ehviewer.translation.BatchMangaTranslator;
 import com.hippo.ehviewer.translation.GalleryTranslationOverlay;
 import com.hippo.ehviewer.translation.GoogleTranslator;
@@ -228,8 +229,12 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             if (mTranslationKey == null || !mTranslationKey.equals(key)) {
                 return;
             }
-            if (pageIndex == mCurrentIndex && Settings.getAutoShowTranslation()) {
-                showCachedTranslation(pageIndex);
+            if (pageIndex == mCurrentIndex) {
+                if (Settings.getBakedTranslation()) {
+                    refreshPageImage(pageIndex);
+                } else if (Settings.getAutoShowTranslation()) {
+                    showCachedTranslation(pageIndex);
+                }
             }
         }
 
@@ -239,7 +244,11 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
                 return;
             }
             if (mCurrentIndex >= 0) {
-                showCachedTranslation(mCurrentIndex);
+                if (Settings.getBakedTranslation()) {
+                    refreshPageImage(mCurrentIndex);
+                } else {
+                    showCachedTranslation(mCurrentIndex);
+                }
             }
         }
     };
@@ -1057,6 +1066,22 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         }
     }
 
+    /**
+     * 丢弃该页已解码的图片并重新请求，让新烧录的"汉化图"立即生效。
+     */
+    private void refreshPageImage(int index) {
+        if (mGalleryProvider == null || index < 0) {
+            return;
+        }
+        if (mTranslationOverlay != null) {
+            mTranslationOverlay.clear();
+            mTranslationOverlay.setVisibility(View.GONE);
+        }
+        // 丢掉内存中的旧图并重新请求，provider 会优先返回刚烧录好的"汉化图"
+        mGalleryProvider.removeCache(index);
+        mGalleryProvider.request(index);
+    }
+
     private void startOverlaySync() {
         if (!mOverlaySyncScheduled) {
             mOverlaySyncScheduled = true;
@@ -1080,6 +1105,12 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
 
     private void showCachedTranslation(final int index, final boolean force, final int retry) {
         if (mTranslationOverlay == null || mTranslationKey == null || index < 0) {
+            return;
+        }
+        if (Settings.getBakedTranslation()) {
+            // 译文已烧进图片，再叠气泡会重复遮挡
+            mTranslationOverlay.clear();
+            mTranslationOverlay.setVisibility(View.GONE);
             return;
         }
         if (!force && !Settings.getAutoShowTranslation()) {
@@ -1178,24 +1209,35 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
                             "图片解码失败", Toast.LENGTH_SHORT).show());
                     return;
                 }
-                List<MangaTextBlock> blocks;
+                boolean baked = false;
+                int count;
                 try {
-                    blocks = MangaOcrManager.getInstance().recognizeSync(bitmap);
+                    List<MangaTextBlock> blocks = MangaOcrManager.getInstance().recognizeSync(bitmap);
+                    count = blocks.size();
+                    if (blocks.isEmpty()) {
+                        MangaTranslationCache.get(appContext).putPage(key, index, blocks);
+                        runOnUiThread(() -> Toast.makeText(GalleryActivity.this,
+                                R.string.translate_nothing, Toast.LENGTH_SHORT).show());
+                        return;
+                    }
+                    GoogleTranslator.translateBlocksSync(blocks);
+                    MangaTranslationCache.get(appContext).putPage(key, index, blocks);
+                    // 直接把中文烧进图片，翻页/拖动/缩放都跟手
+                    if (Settings.getBakedTranslation()) {
+                        baked = BakedTranslationStore.bake(appContext, key, index, bitmap, blocks);
+                    }
                 } finally {
                     bitmap.recycle();
                 }
-                if (blocks.isEmpty()) {
-                    MangaTranslationCache.get(appContext).putPage(key, index, blocks);
-                    runOnUiThread(() -> Toast.makeText(GalleryActivity.this,
-                            R.string.translate_nothing, Toast.LENGTH_SHORT).show());
-                    return;
-                }
-                GoogleTranslator.translateBlocksSync(blocks);
-                MangaTranslationCache.get(appContext).putPage(key, index, blocks);
-                final int count = blocks.size();
+                final boolean bakedOk = baked;
                 runOnUiThread(() -> {
                     if (index == mCurrentIndex) {
-                        showCachedTranslation(index, true);
+                        if (bakedOk) {
+                            // 让这一页按"汉化图"重新解码
+                            refreshPageImage(index);
+                        } else {
+                            showCachedTranslation(index, true);
+                        }
                     }
                     if (toastResult) {
                         Toast.makeText(GalleryActivity.this,
