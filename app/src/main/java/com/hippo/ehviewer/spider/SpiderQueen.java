@@ -1380,19 +1380,26 @@ public final class SpiderQueen implements Runnable {
                     triedOrigin = true;
                     targetImageUrl = originImageUrl;
                     try {
+                        // 只用一次很短的探测判断原图是否可用，拿到结果立刻关闭。
+                        // 这里原来是 30 秒超时且从不 close：探测失败要空等半分钟，
+                        // 还没消费的 body 会把连接一直占住，后面每页都得重新建连。
                         Call call = mHttpImageClient.newBuilder()
-                                .callTimeout(30, TimeUnit.SECONDS).build()
+                                .callTimeout(10, TimeUnit.SECONDS).build()
                                 .newCall(new EhRequestBuilder(targetImageUrl, referer).build());
                         Response response = call.execute();
-                        String location = response.header("location");
-                        if (location != null && !location.isEmpty()) {
-                            targetImageUrl = location;
-                        } else if (response.isSuccessful() && response.body() != null) {
-                            // Direct original image
-                        } else {
-                            // Fallback to normal image
-                            Log.w(TAG, "Original image unavailable (code " + response.code() + "), falling back to resized image");
-                            targetImageUrl = imageUrl;
+                        try {
+                            String location = response.header("location");
+                            if (location != null && !location.isEmpty()) {
+                                targetImageUrl = location;
+                            } else if (response.isSuccessful() && response.body() != null) {
+                                // Direct original image
+                            } else {
+                                // Fallback to normal image
+                                Log.w(TAG, "Original image unavailable (code " + response.code() + "), falling back to resized image");
+                                targetImageUrl = imageUrl;
+                            }
+                        } finally {
+                            response.close();
                         }
                     } catch (Throwable e) {
                         Log.w(TAG, "Original image download failed, falling back to standard image: " + e.getMessage());

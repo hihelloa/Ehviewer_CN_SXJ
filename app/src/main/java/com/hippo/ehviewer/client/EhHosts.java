@@ -204,7 +204,7 @@ public class EhHosts implements Dns {
             Collections.shuffle(inetAddresses, new Random(System.currentTimeMillis()));
             return inetAddresses;
         }
-        if (Settings.getBuiltInHosts() || Settings.getBuiltInEXHosts()) {
+        if (Settings.getBuiltInHosts() || Settings.getBuiltEXHosts()) {
             inetAddresses = builtInHosts.get(hostname);
             if (inetAddresses != null) {
                 // 复制一份再打乱：builtInHosts 是静态共享的，
