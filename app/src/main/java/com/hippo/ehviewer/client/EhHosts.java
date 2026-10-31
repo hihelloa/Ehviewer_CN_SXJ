@@ -127,7 +127,7 @@ public class EhHosts implements Dns {
     // DNS 结果内存缓存。原来每次新建连接都要查一次 SQLite（hosts.getList），
     // 没命中再造一次系统 DNS / DoH。H@H 每页图片的域名都不一样，
     // 一本漫画下来几百次解析，单次几百毫秒就直接体现在"看图慢、下载慢"上。
-    private static final long DNS_CACHE_TTL_MS = 10 * 60 * 1000L;
+    private static final long DNS_CACHE_TTL_MS = 2 * 60 * 1000L;
     private static final int DNS_CACHE_MAX = 512;
     private static final Map<String, DnsCacheEntry> DNS_CACHE =
             Collections.synchronizedMap(new LinkedHashMap<String, DnsCacheEntry>(64, 0.75f, true) {
@@ -186,7 +186,11 @@ public class EhHosts implements Dns {
             DNS_CACHE.remove(hostname);
             return null;
         }
-        return new ArrayList<>(entry.addresses);
+        // 每次重新打乱顺序：同一个域名可能有多个地址，其中部分不可达，
+        // 固定顺序会让所有请求一直撞在同一个坏 IP 上。
+        List<InetAddress> result = new ArrayList<>(entry.addresses);
+        Collections.shuffle(result, new Random(System.currentTimeMillis()));
+        return result;
     }
 
     private void putToCache(String hostname, List<InetAddress> addresses) {

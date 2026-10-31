@@ -34,16 +34,41 @@ public final class BakedTranslationStore {
     private static final String DIR = "baked_translation";
     private static final int JPEG_QUALITY = 92;
 
+    /**
+     * 记录"这张 Image 就是烧录图"。解码线程会优先返回汉化图，
+     * 上层回调如果再查一次就会重复解码，用它做去重。
+     * 弱引用：GL 层回收纹理后自动消失，不会持有图片内存。
+     */
+    private static final java.util.Map<Image, Boolean> BAKED_IMAGES =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<Image, Boolean>());
+
     private BakedTranslationStore() {
+    }
+
+    /** 这张图是否由 {@link #decode} 产出（即已经是汉化图）。 */
+    public static boolean isBakedImage(@Nullable Image image) {
+        if (image == null) {
+            return false;
+        }
+        return BAKED_IMAGES.containsKey(image);
     }
 
     @NonNull
     private static File root(@NonNull Context context) {
-        File dir = new File(context.getCacheDir(), DIR);
+        // 放在 files 目录而不是 cache：译文 JSON 存在 files 里，
+        // 烧录图却放 cache 会被系统在存储紧张时直接清掉，
+        // 结果就是"翻译记录还在，但画面上一句译文都没有"。
+        File dir = new File(context.getFilesDir(), DIR);
         if (!dir.exists() && !dir.mkdirs()) {
             Log.w(TAG, "Failed to create " + dir);
         }
         return dir;
+    }
+
+    /** 旧版本把烧录图写在 cacheDir，读取时仍要兼容，避免升级后译文全部消失。 */
+    @NonNull
+    private static File legacyRoot(@NonNull Context context) {
+        return new File(context.getCacheDir(), DIR);
     }
 
     @NonNull
@@ -55,8 +80,31 @@ public final class BakedTranslationStore {
         return new File(dir, index + ".jpg");
     }
 
+    /**
+     * 读取时先找新位置，再退回旧位置。
+     */
+    @NonNull
+    private static File find(@NonNull Context context, @NonNull String key, int index) {
+        File current = file(context, key, index);
+        if (current.exists() && current.length() > 0) {
+            return current;
+        }
+        File legacy = new File(new File(legacyRoot(context), key), index + ".jpg");
+        if (legacy.exists() && legacy.length() > 0) {
+            // 顺手迁到新位置，否则旧图迟早会被系统当缓存清掉
+            if (legacy.renameTo(current) && current.exists()) {
+                return current;
+            }
+            if (current.exists() && current.length() > 0) {
+                return current;
+            }
+            return legacy;
+        }
+        return current;
+    }
+
     public static boolean has(@NonNull Context context, @NonNull String key, int index) {
-        File f = file(context, key, index);
+        File f = find(context, key, index);
         return f.exists() && f.length() > 0;
     }
 
@@ -179,12 +227,16 @@ public final class BakedTranslationStore {
      */
     @Nullable
     public static Image decode(@NonNull Context context, @NonNull String key, int index) {
-        File f = file(context, key, index);
+        File f = find(context, key, index);
         if (!f.exists() || f.length() <= 0) {
             return null;
         }
         try (FileInputStream is = new FileInputStream(f)) {
-            return Image.decode(is, false);
+            Image image = Image.decode(is, false);
+            if (image != null) {
+                BAKED_IMAGES.put(image, Boolean.TRUE);
+            }
+            return image;
         } catch (Throwable t) {
             Log.w(TAG, "decode baked image failed: " + t.getMessage());
             return null;
@@ -192,8 +244,9 @@ public final class BakedTranslationStore {
     }
 
     public static void clear(@NonNull Context context, @NonNull String key) {
-        File dir = new File(root(context), key);
-        deleteRecursively(dir);
+        deleteRecursively(new File(root(context), key));
+        // 旧版本留下的同 key 目录也要一起清，否则会和新图混在一起
+        deleteRecursively(new File(legacyRoot(context), key));
     }
 
     private static void deleteRecursively(@Nullable File file) {

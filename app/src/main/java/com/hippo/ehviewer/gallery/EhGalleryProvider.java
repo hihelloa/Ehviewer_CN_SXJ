@@ -23,6 +23,9 @@ import com.hippo.ehviewer.client.data.GalleryInfo;
 import com.hippo.ehviewer.spider.SpiderQueen;
 import com.hippo.lib.glgallery.GalleryProvider;
 import com.hippo.lib.image.Image;
+import com.hippo.ehviewer.Settings;
+import com.hippo.ehviewer.translation.BakedTranslationStore;
+import com.hippo.ehviewer.translation.MangaTranslationCache;
 //import com.hippo.lib.image.Image1;
 import com.hippo.unifile.UniFile;
 import com.hippo.lib.yorozuya.SimpleHandler;
@@ -187,8 +190,22 @@ public class EhGalleryProvider extends GalleryProvider2 implements SpiderQueen.O
 
     @Override
     public void onGetImageSuccess(int index, Image image) {
-        // 烧录替换已经在 SpiderQueen 的解码线程里完成（那里直接解码汉化图，
-        // 跳过原图解码）。这里不要再解一次，否则每页要解码两张图。
+        // 解码线程已经返回汉化图，直接用，别再解一次。
+        if (BakedTranslationStore.isBakedImage(image)) {
+            notifyPageSucceed(index, image);
+            return;
+        }
+        // 兜底：解码线程没来得及替换（异常/旧路径/该页刚烧录完），
+        // 这里再查一次缓存，避免"明明翻译过却显示原文"。
+        if (Settings.getBakedTranslation() && mGalleryInfo != null && mGalleryInfo.gid > 0) {
+            String key = MangaTranslationCache.keyForGid(mGalleryInfo.gid);
+            Image baked = BakedTranslationStore.decode(mContext, key, index);
+            if (baked != null) {
+                notifyPageSucceed(index, baked);
+                image.recycle();
+                return;
+            }
+        }
         notifyPageSucceed(index, image);
     }
 

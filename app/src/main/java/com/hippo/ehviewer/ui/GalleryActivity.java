@@ -243,6 +243,13 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             if (mTranslationKey == null || !mTranslationKey.equals(key)) {
                 return;
             }
+            // 失败页给个明确提示：以前跑完什么都不说，
+            // 用户只会觉得"翻译没生效"，分不清是没跑、跑挂了还是这页没字。
+            if (!cancelled && failed > 0) {
+                Toast.makeText(GalleryActivity.this,
+                        getString(R.string.translate_finished, Math.max(0, finished - failed), failed),
+                        Toast.LENGTH_LONG).show();
+            }
             if (mCurrentIndex >= 0) {
                 if (Settings.getBakedTranslation()) {
                     refreshPageImage(mCurrentIndex);
@@ -1108,10 +1115,15 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             return;
         }
         if (Settings.getBakedTranslation()) {
-            // 译文已烧进图片，再叠气泡会重复遮挡
-            mTranslationOverlay.clear();
-            mTranslationOverlay.setVisibility(View.GONE);
-            return;
+            // 译文已烧进图片，再叠气泡会重复遮挡。
+            // 但如果这一页没有烧录图（缓存被系统清理、烧录失败、或旧版本遗留），
+            // 就必须回退到气泡。否则 JSON 里明明有译文，画面却什么都没有，
+            // 看起来就是"翻译全没了"。
+            if (BakedTranslationStore.has(this, mTranslationKey, index)) {
+                mTranslationOverlay.clear();
+                mTranslationOverlay.setVisibility(View.GONE);
+                return;
+            }
         }
         if (!force && !Settings.getAutoShowTranslation()) {
             mTranslationOverlay.clear();
