@@ -117,6 +117,17 @@ public final class BakedTranslationStore {
         if (blocks.isEmpty()) {
             return false;
         }
+        // 一句译文都没有时不要生成图片：否则整页会被画满空白气泡
+        int drawable = 0;
+        for (MangaTextBlock block : blocks) {
+            if (block.translatedText != null && !block.translatedText.trim().isEmpty()) {
+                drawable++;
+            }
+        }
+        if (drawable == 0) {
+            Log.w(TAG, "No translated text on page " + index + ", skip baking");
+            return false;
+        }
         Bitmap out;
         try {
             out = source.copy(Bitmap.Config.ARGB_8888, true);
@@ -134,7 +145,7 @@ public final class BakedTranslationStore {
                 if (text.isEmpty()) {
                     continue;
                 }
-                drawBlock(canvas, block.boundingBox, text);
+                drawBlock(canvas, block.boundingBox, text, out.getWidth(), out.getHeight());
             }
             File dest = file(context, key, index);
             File tmp = new File(dest.getAbsolutePath() + ".tmp");
@@ -154,18 +165,49 @@ public final class BakedTranslationStore {
         }
     }
 
-    private static void drawBlock(@NonNull Canvas canvas, @NonNull Rect box, @NonNull String text) {
-        if (box.width() <= 2 || box.height() <= 2) {
+    private static void drawBlock(@NonNull Canvas canvas, @NonNull Rect box, @NonNull String text,
+                                  int imgWidth, int imgHeight) {
+        if (box.width() <= 2 || box.height() <= 2 || imgWidth <= 4 || imgHeight <= 4) {
             return;
         }
-        // 略微外扩，盖住原文边缘
-        RectF bg = new RectF(box);
-        float padX = Math.max(2f, box.width() * 0.04f);
-        float padY = Math.max(2f, box.height() * 0.04f);
-        bg.inset(-padX, -padY);
+        // 日文对白多是竖排窄条，中文是横排，直接塞进原框会挤成十几行。
+        // 这类框优先向两侧扩宽；横向排版则优先向下扩高。
+        boolean verticalSource = box.height() > box.width() * 1.3f;
+
+        float padX = Math.max(2f, box.width() * 0.05f);
+        float padY = Math.max(2f, box.height() * 0.05f);
+
+        int maxW = verticalSource
+                ? (int) Math.min(imgWidth - 4, box.width() * 1.9f)
+                : (int) Math.min(imgWidth - 4, box.width() * 1.2f);
+        maxW = Math.max(maxW, Math.min(box.width(), imgWidth - 4));
+        // 高度上限给到原框的 3 倍：宁可多盖一点背景，也不要把译文裁掉
+        int maxH = (int) Math.min(imgHeight - 4, box.height() * 3.0f);
+        maxH = Math.max(maxH, Math.min(box.height(), imgHeight - 4));
+
+        TextPaint tp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        tp.setColor(Color.BLACK);
+        tp.setTypeface(Typeface.DEFAULT_BOLD);
+        tp.setTextAlign(Paint.Align.LEFT);
+
+        int textSize = fitTextSize(tp, text, maxW, maxH);
+        tp.setTextSize(textSize);
+        StaticLayout layout = buildLayout(text, tp, maxW);
+
+        // 背景按"原框"和"实际排版尺寸"取大者，保证文字不会被裁
+        float bgW = Math.max(box.width() + padX * 2f, layout.getWidth() + padX * 2f);
+        float bgH = Math.max(box.height() + padY * 2f, layout.getHeight() + padY * 2f);
+        bgW = Math.min(bgW, imgWidth - 2f);
+        bgH = Math.min(bgH, imgHeight - 2f);
+
+        float left = box.exactCenterX() - bgW / 2f;
+        float top = box.exactCenterY() - bgH / 2f;
+        left = Math.max(1f, Math.min(left, imgWidth - bgW - 1f));
+        top = Math.max(1f, Math.min(top, imgHeight - bgH - 1f));
+        RectF bg = new RectF(left, top, left + bgW, top + bgH);
 
         Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        bgPaint.setColor(0xF7FFFFFF);
+        bgPaint.setColor(0xFAFFFFFF);
         float radius = Math.min(bg.width(), bg.height()) * 0.18f;
         canvas.drawRoundRect(bg, radius, radius, bgPaint);
 
@@ -174,21 +216,12 @@ public final class BakedTranslationStore {
         bgPaint.setColor(0x66000000);
         canvas.drawRoundRect(bg, radius, radius, bgPaint);
 
-        int width = Math.max((int) (box.width() - 2f), 8);
-        TextPaint tp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
-        tp.setColor(Color.BLACK);
-        tp.setTypeface(Typeface.DEFAULT_BOLD);
-        tp.setTextAlign(Paint.Align.LEFT);
-
-        int textSize = fitTextSize(tp, text, width, box.height());
-        tp.setTextSize(textSize);
-        StaticLayout layout = buildLayout(text, tp, width);
-        float tx = box.left;
-        // 垂直居中
-        float ty = box.top + Math.max(0f, (box.height() - layout.getHeight()) / 2f);
+        // 文字在扩展后的背景里居中，不再用 clipRect 把溢出部分切掉
+        float tx = bg.left + (bg.width() - layout.getWidth()) / 2f;
+        float ty = bg.top + (bg.height() - layout.getHeight()) / 2f;
 
         canvas.save();
-        canvas.clipRect(bg);
+        canvas.clipRect(0, 0, imgWidth, imgHeight);
         canvas.translate(tx, ty);
         layout.draw(canvas);
         canvas.restore();
@@ -198,14 +231,14 @@ public final class BakedTranslationStore {
      * 二分找最大可放下的字号，让中文尽量填满原文区域。
      */
     private static int fitTextSize(@NonNull TextPaint tp, @NonNull String text, int width, int maxHeight) {
-        int low = 8;
+        int low = 6;
         int high = Math.max(12, Math.min(maxHeight, width));
         int best = low;
-        for (int i = 0; i < 8 && low <= high; i++) {
+        for (int i = 0; i < 9 && low <= high; i++) {
             int mid = (low + high) / 2;
             tp.setTextSize(mid);
             StaticLayout l = buildLayout(text, tp, width);
-            if (l.getHeight() <= maxHeight && l.getLineCount() * mid <= maxHeight * 1.6f) {
+            if (l.getHeight() <= maxHeight) {
                 best = mid;
                 low = mid + 1;
             } else {

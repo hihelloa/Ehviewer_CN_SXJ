@@ -28,6 +28,11 @@ import java.util.concurrent.TimeUnit;
 public class MangaOcrManager {
     private static final String TAG = "MangaOcrManager";
     private static final long DEFAULT_SYNC_TIMEOUT_MS = 45_000L;
+    /** 切片高度：ML Kit 输入过大时会内部缩小，小字直接糊掉，切片能显著提升召回。 */
+    private static final int TILE_HEIGHT = 1400;
+    /** 切片重叠带，避免一行字正好被切在边界上导致两边都识别不全。 */
+    private static final int TILE_OVERLAP = 220;
+    private static final long TILE_TIMEOUT_MS = 30_000L;
     private static volatile MangaOcrManager sInstance;
 
     private final TextRecognizer mRecognizer;
@@ -71,7 +76,7 @@ public class MangaOcrManager {
                             if (text == null || text.trim().isEmpty() || rect == null) {
                                 continue;
                             }
-                            if (isNoiseText(text) || rect.width() < 10 || rect.height() < 10) {
+                            if (isNoiseText(text) || rect.width() < 6 || rect.height() < 6) {
                                 continue;
                             }
 
@@ -158,6 +163,101 @@ public class MangaOcrManager {
             Thread.currentThread().interrupt();
         }
         return holder.get();
+    }
+
+    /**
+     * 整页识别：长页按纵向切片分别识别再合并，短页直接识别。
+     *
+     * <p>ML Kit 对输入图有尺寸上限，超大图会被内部降采样，漫画小字因此识别不出来，
+     * 表现就是"整页只译了其中几句"。切片后每片都保持原始像素密度，召回明显提高。
+     * 必须在后台线程调用。
+     */
+    @NonNull
+    public List<MangaTextBlock> recognizePageSync(@NonNull Bitmap bitmap) {
+        final int width = bitmap.getWidth();
+        final int height = bitmap.getHeight();
+        if (width <= 0 || height <= 0) {
+            return Collections.emptyList();
+        }
+        if (height <= TILE_HEIGHT + TILE_OVERLAP) {
+            return recognizeSync(bitmap);
+        }
+
+        List<MangaTextBlock> merged = new ArrayList<>();
+        int step = TILE_HEIGHT - TILE_OVERLAP;
+        for (int top = 0; top < height; top += step) {
+            int bottom = Math.min(top + TILE_HEIGHT, height);
+            if (bottom - top < 120) {
+                break;
+            }
+            Bitmap tile = null;
+            List<MangaTextBlock> blocks;
+            try {
+                tile = Bitmap.createBitmap(bitmap, 0, top, width, bottom - top);
+                blocks = recognizeSync(tile, TILE_TIMEOUT_MS);
+            } catch (Throwable t) {
+                Log.w(TAG, "slice at " + top + " failed: " + t.getMessage());
+                break;
+            } finally {
+                if (tile != null) {
+                    tile.recycle();
+                }
+            }
+            for (MangaTextBlock block : blocks) {
+                Rect box = new Rect(block.boundingBox);
+                box.offset(0, top);
+                if (isDuplicate(merged, box, block.originalText)) {
+                    continue;
+                }
+                merged.add(new MangaTextBlock(block.originalText, box, width, height));
+            }
+            if (bottom >= height) {
+                break;
+            }
+        }
+        return merged;
+    }
+
+    /** 重叠带里的同一段文字会被相邻两片各识别一次，按交叠比例去重。 */
+    private boolean isDuplicate(@NonNull List<MangaTextBlock> merged, @NonNull Rect box, @NonNull String text) {
+        for (MangaTextBlock existing : merged) {
+            Rect other = existing.boundingBox;
+            if (!Rect.intersects(other, box)) {
+                continue;
+            }
+            long inter = intersectionArea(other, box);
+            if (inter <= 0) {
+                continue;
+            }
+            long minArea = Math.min(area(other), area(box));
+            if (minArea <= 0) {
+                continue;
+            }
+            float ratio = (float) inter / minArea;
+            if (ratio > 0.6f) {
+                return true;
+            }
+            // 同一段文字被切片边界截断，两半会有部分重叠
+            if (existing.originalText.equals(text) && ratio > 0.2f) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static long area(@NonNull Rect r) {
+        return (long) Math.max(0, r.width()) * Math.max(0, r.height());
+    }
+
+    private static long intersectionArea(@NonNull Rect a, @NonNull Rect b) {
+        int left = Math.max(a.left, b.left);
+        int top = Math.max(a.top, b.top);
+        int right = Math.min(a.right, b.right);
+        int bottom = Math.min(a.bottom, b.bottom);
+        if (right <= left || bottom <= top) {
+            return 0;
+        }
+        return (long) (right - left) * (bottom - top);
     }
 
     /**

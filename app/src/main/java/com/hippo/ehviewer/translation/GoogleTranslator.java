@@ -161,10 +161,44 @@ public class GoogleTranslator {
             return 0;
         }
         int batch = translateBatch(blocks);
-        if (batch >= 0) {
-            return batch;
+        if (batch < 0) {
+            batch = translateBlocksOneByOne(blocks);
         }
-        return translateBlocksOneByOne(blocks);
+        // 免费接口偶发限流会让个别块留空，补两轮，尽量把整页译全
+        for (int round = 0; round < 2; round++) {
+            List<MangaTextBlock> missing = collectMissing(blocks);
+            if (missing.isEmpty()) {
+                break;
+            }
+            Log.w(TAG, "retry missing blocks: " + missing.size() + " (round " + (round + 1) + ")");
+            sleep(600L * (round + 1));
+            translateBlocksOneByOne(missing);
+        }
+        return countTranslated(blocks);
+    }
+
+    @NonNull
+    private static List<MangaTextBlock> collectMissing(@NonNull List<MangaTextBlock> blocks) {
+        List<MangaTextBlock> missing = new ArrayList<>();
+        for (MangaTextBlock block : blocks) {
+            if (block.originalText == null || block.originalText.trim().isEmpty()) {
+                continue;
+            }
+            if (block.translatedText == null || block.translatedText.trim().isEmpty()) {
+                missing.add(block);
+            }
+        }
+        return missing;
+    }
+
+    private static int countTranslated(@NonNull List<MangaTextBlock> blocks) {
+        int count = 0;
+        for (MangaTextBlock block : blocks) {
+            if (block.hasTranslation()) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**
@@ -241,7 +275,8 @@ public class GoogleTranslator {
                 memo.put(original, translated);
                 success++;
             } else {
-                block.setTranslatedText(original);
+                // 不要把日文写回译文：烧录时会把原文重画一遍，糊在气泡上
+                block.setTranslatedText("");
             }
             // 稍微放慢节奏，避免整页几十个请求瞬间打满免费接口
             sleep(BLOCK_INTERVAL_MS);

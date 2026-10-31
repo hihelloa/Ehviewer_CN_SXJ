@@ -42,7 +42,14 @@ public class MangaTranslationCache {
 
     private static final String TAG = "MangaTranslationCache";
     private static final String DIR_NAME = "translation_cache";
-    private static final int VERSION = 1;
+    /**
+     * 缓存结构/识别质量版本。
+     *
+     * <p>v1 用整页 1800px 缩略图做 OCR，小字大量漏识别，缓存结果本身就不完整；
+     * v2 改为 2600px + 长页切片识别。版本不一致的旧缓存要在整本翻译时重建，
+     * 否则"翻译不全"会被永久固化。
+     */
+    private static final int VERSION = 2;
 
     private static volatile MangaTranslationCache sInstance;
 
@@ -137,6 +144,19 @@ public class MangaTranslationCache {
         }
     }
 
+    /** 磁盘上这份缓存的版本号，0 表示没有缓存文件。 */
+    public int getVersion(@NonNull String key) {
+        GalleryCache cache = obtain(key);
+        synchronized (cache) {
+            return cache.version;
+        }
+    }
+
+    public boolean isLegacy(@NonNull String key) {
+        int version = getVersion(key);
+        return version > 0 && version < VERSION;
+    }
+
     public void putPage(@NonNull String key, int pageIndex, @NonNull List<MangaTextBlock> blocks) {
         GalleryCache cache = obtain(key);
         synchronized (cache) {
@@ -149,6 +169,7 @@ public class MangaTranslationCache {
         GalleryCache cache = obtain(key);
         synchronized (cache) {
             cache.pages.clear();
+            cache.version = 0;
             File file = getCacheFile(key);
             if (file.exists() && !file.delete()) {
                 Log.w(TAG, "Failed to delete " + file);
@@ -173,7 +194,7 @@ public class MangaTranslationCache {
                 cache = mCaches.get(key);
                 if (cache == null) {
                     cache = new GalleryCache();
-                    cache.pages = readFromDisk(key);
+                    readFromDisk(key, cache);
                     mCaches.put(key, cache);
                 }
             }
@@ -181,22 +202,26 @@ public class MangaTranslationCache {
         return cache;
     }
 
-    @NonNull
-    private Map<Integer, List<MangaTextBlock>> readFromDisk(@NonNull String key) {
+    private void readFromDisk(@NonNull String key, @NonNull GalleryCache cache) {
         Map<Integer, List<MangaTextBlock>> pages = new LinkedHashMap<>();
         File file = getCacheFile(key);
         if (!file.exists() || file.length() <= 0) {
-            return pages;
+            cache.pages = pages;
+            cache.version = 0;
+            return;
         }
         String content = readFile(file);
         if (content == null || content.isEmpty()) {
-            return pages;
+            cache.pages = pages;
+            return;
         }
         try {
             JSONObject root = new JSONObject(content);
+            cache.version = root.optInt("version", 0);
             JSONObject pagesJson = root.optJSONObject("pages");
             if (pagesJson == null) {
-                return pages;
+                cache.pages = pages;
+                return;
             }
             for (java.util.Iterator<String> it = pagesJson.keys(); it.hasNext(); ) {
                 String pageKey = it.next();
@@ -213,7 +238,7 @@ public class MangaTranslationCache {
             Log.e(TAG, "Corrupted cache for " + key + ", ignored: " + t.getMessage());
             pages.clear();
         }
-        return pages;
+        cache.pages = pages;
     }
 
     @NonNull
@@ -296,6 +321,8 @@ public class MangaTranslationCache {
             }
             if (!tmp.renameTo(file)) {
                 Log.w(TAG, "Failed to rename cache file");
+            } else {
+                cache.version = VERSION;
             }
         } catch (Throwable t) {
             Log.e(TAG, "Write cache failed: " + t.getMessage());
@@ -345,5 +372,7 @@ public class MangaTranslationCache {
 
     private static class GalleryCache {
         Map<Integer, List<MangaTextBlock>> pages = new LinkedHashMap<>();
+        /** 磁盘文件的版本号，0 表示无文件或刚被清空。 */
+        int version;
     }
 }

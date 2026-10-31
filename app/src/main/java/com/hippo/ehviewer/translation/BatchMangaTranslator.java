@@ -30,7 +30,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class BatchMangaTranslator {
 
     private static final String TAG = "BatchMangaTranslator";
-    private static final int MAX_DECODE_SIZE = 1800;
+    /**
+     * OCR 输入的最长边。原来取 1800，但 inSampleSize 只能取 2 的幂，
+     * 1600×2400 的页面会被直接砍成 800×1200，漫画小字全部糊掉，
+     * 这是"整页只译出几句"的主要原因之一。
+     */
+    private static final int MAX_DECODE_SIZE = 2600;
     /** 单页取图重试上限，0 表示不设上限（失败就一直重试，直到成功或用户取消）。 */
     private static final int MAX_FETCH_RETRY = 0;
 
@@ -169,6 +174,12 @@ public class BatchMangaTranslator {
             }
             task.total = total;
             MangaTranslationCache cache = MangaTranslationCache.get(task.appContext);
+            if (cache.isLegacy(key)) {
+                // v1 缓存由整页缩略图 OCR 产生，本身就漏字。不清掉的话，
+                // 下面 isPageProcessed 会把这些不完整的页永久跳过，永远补不全。
+                Log.i(TAG, "Legacy translation cache for " + key + ", rebuilding");
+                cache.clear(key);
+            }
 
             for (int index = 0; index < total; index++) {
                 if (task.cancelled.get()) {
@@ -237,7 +248,7 @@ public class BatchMangaTranslator {
                     try {
                         List<MangaTextBlock> blocks = cachedBlocks != null
                                 ? cachedBlocks
-                                : MangaOcrManager.getInstance().recognizeSync(bitmap);
+                                : MangaOcrManager.getInstance().recognizePageSync(bitmap);
                         int translated = cachedBlocks != null
                                 ? cachedBlocks.size()
                                 : GoogleTranslator.translateBlocksSync(blocks);
@@ -248,6 +259,13 @@ public class BatchMangaTranslator {
                             task.finished++;
                             postProgress(task);
                             continue;
+                        }
+                        if (translated < blocks.size()) {
+                            // 少量块没译出来：仍然落盘（用户至少能看到已译的部分），
+                            // 但计为异常页，提示里会显示出来
+                            Log.w(TAG, "Page " + index + " partially translated: "
+                                    + translated + "/" + blocks.size());
+                            task.failed++;
                         }
                         cache.putPage(key, index, blocks);
                         // 译文直接烧进图片，阅读时就是"汉化图"，拖动缩放完全跟手
@@ -334,15 +352,37 @@ public class BatchMangaTranslator {
             if (width <= 0 || height <= 0) {
                 return null;
             }
+            // 只在"再降一半仍然够大"时才跳采样，避免把 2400 直接砍成 1200
             int sample = 1;
             int longest = Math.max(width, height);
-            while (longest / sample > maxSide) {
+            while (longest / (sample * 2) >= maxSide) {
                 sample *= 2;
             }
             BitmapFactory.Options decodeOptions = new BitmapFactory.Options();
             decodeOptions.inSampleSize = sample;
             decodeOptions.inPreferredConfig = Bitmap.Config.RGB_565;
-            return BitmapFactory.decodeFile(path, decodeOptions);
+            Bitmap decoded = BitmapFactory.decodeFile(path, decodeOptions);
+            if (decoded == null) {
+                return null;
+            }
+            int decodedLongest = Math.max(decoded.getWidth(), decoded.getHeight());
+            if (decodedLongest <= maxSide) {
+                return decoded;
+            }
+            // 用精确缩放收口，而不是靠 2 的幂硬跳
+            float scale = maxSide / (float) decodedLongest;
+            int targetW = Math.max(1, Math.round(decoded.getWidth() * scale));
+            int targetH = Math.max(1, Math.round(decoded.getHeight() * scale));
+            try {
+                Bitmap scaled = Bitmap.createScaledBitmap(decoded, targetW, targetH, true);
+                if (scaled != decoded) {
+                    decoded.recycle();
+                }
+                return scaled;
+            } catch (Throwable t) {
+                Log.w(TAG, "scale failed, use decoded: " + t.getMessage());
+                return decoded;
+            }
         } catch (Throwable t) {
             Log.e(TAG, "decodeSampled failed: " + t.getMessage());
             return null;

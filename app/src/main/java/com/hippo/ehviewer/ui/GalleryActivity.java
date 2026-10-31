@@ -1215,7 +1215,7 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
                             R.string.translate_not_ready, Toast.LENGTH_SHORT).show());
                     return;
                 }
-                Bitmap bitmap = BatchMangaTranslator.decodeSampled(tempFile.getAbsolutePath(), 1800);
+                Bitmap bitmap = BatchMangaTranslator.decodeSampled(tempFile.getAbsolutePath(), 2600);
                 if (bitmap == null) {
                     runOnUiThread(() -> Toast.makeText(GalleryActivity.this,
                             "图片解码失败", Toast.LENGTH_SHORT).show());
@@ -1224,10 +1224,11 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
                 boolean baked = false;
                 int countTemp = 0;
                 try {
-                    List<MangaTextBlock> blocks = MangaOcrManager.getInstance().recognizeSync(bitmap);
+                    List<MangaTextBlock> blocks = MangaOcrManager.getInstance().recognizePageSync(bitmap);
                     countTemp = blocks.size();
                     if (blocks.isEmpty()) {
-                        MangaTranslationCache.get(appContext).putPage(key, index, blocks);
+                        // 不要写空缓存：写进去之后 isPageProcessed 会返回 true，
+                        // 整本翻译时这一页就被永久跳过，再也补不回来。
                         runOnUiThread(() -> Toast.makeText(GalleryActivity.this,
                                 R.string.translate_nothing, Toast.LENGTH_SHORT).show());
                         return;
