@@ -114,13 +114,12 @@ public class GoogleTranslator {
                         combined.append(DELIMITER);
                     }
                     // 将单个块内部多行合并，换行替换为空格
-                    String single = blocks.get(i).originalText.replace("
-", " ").trim();
+                    String single = blocks.get(i).originalText.replace("\n", " ").trim();
                     combined.append(single);
                 }
 
                 String translatedAll = translateSync(combined.toString());
-                String[] parts = translatedAll.split("---PARAGRAPH_SEP---|\n---PARAGRAPH_SEP---\n");
+                String[] parts = translatedAll.split("---PARAGRAPH_SEP---|\\n---PARAGRAPH_SEP---\\n");
 
                 if (parts.length == blocks.size()) {
                     for (int i = 0; i < blocks.size(); i++) {
