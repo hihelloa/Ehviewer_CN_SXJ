@@ -191,6 +191,25 @@
                         android:text="@string/read"
                         android:textColor="?attr/textColorThemeAccent" />
 
+                    <View
+                        android:layout_width="1dp"
+                        android:layout_height="match_parent"
+                        android:layout_marginTop="8dp"
+                        android:layout_marginBottom="8dp"
+                        android:background="?attr/dividerColor" />
+
+                    <TextView
+                        android:id="@+id/translate"
+                        style="@style/ButtonInCard"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:background="?selectableItemBackgroundBorderless"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:text="@string/translate_whole_manga_short"
+                        android:textColor="?attr/textColorThemeAccent" />
+
                 </LinearLayout>
 
             </com.google.android.material.card.MaterialCardView>

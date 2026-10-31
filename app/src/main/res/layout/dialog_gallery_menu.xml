@@ -27,6 +27,43 @@
         android:padding="@dimen/keyline_margin"
         android:showDividers="middle">
 
+        <!-- 翻译入口：放在菜单最顶部，避免用户找不到 -->
+        <TextView
+            android:id="@+id/menu_translate_whole"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="?selectableItemBackground"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingTop="14dp"
+            android:paddingBottom="14dp"
+            android:text="@string/translate_whole_manga"
+            android:textColor="?attr/textColorThemeAccent"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/menu_translate_page"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="?selectableItemBackground"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingTop="12dp"
+            android:paddingBottom="12dp"
+            android:text="@string/translate_current_page"
+            android:textColor="?attr/textColorThemeAccent"
+            android:textSize="15sp" />
+
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/menu_auto_show_translation"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:text="@string/translate_auto_show"
+            android:textColor="?android:attr/textColorPrimary" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

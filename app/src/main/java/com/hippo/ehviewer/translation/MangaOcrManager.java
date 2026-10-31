@@ -7,6 +7,7 @@ import android.os.Looper;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.Text;
@@ -15,7 +16,10 @@ import com.google.mlkit.vision.text.TextRecognizer;
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 漫画 OCR 识别管理器
@@ -23,7 +27,9 @@ import java.util.List;
  */
 public class MangaOcrManager {
     private static final String TAG = "MangaOcrManager";
-    private static MangaOcrManager sInstance;
+    private static final long DEFAULT_SYNC_TIMEOUT_MS = 45_000L;
+    private static volatile MangaOcrManager sInstance;
+
     private final TextRecognizer mRecognizer;
     private final Handler mMainHandler = new Handler(Looper.getMainLooper());
 
@@ -46,9 +52,9 @@ public class MangaOcrManager {
     }
 
     /**
-     * 对漫画位图进行 OCR 识别并调用翻译
+     * 仅做 OCR 识别，不翻译。回调在主线程。
      */
-    public void processPageBitmap(@NonNull Bitmap bitmap, @NonNull OcrCallback callback) {
+    public void recognize(@NonNull Bitmap bitmap, @NonNull OcrCallback callback) {
         try {
             InputImage inputImage = InputImage.fromBitmap(bitmap, 0);
             int imgWidth = bitmap.getWidth();
@@ -69,36 +75,89 @@ public class MangaOcrManager {
                                 continue;
                             }
 
-                            blocks.add(new MangaTextBlock(text, rect, imgWidth, imgHeight));
+                            blocks.add(new MangaTextBlock(text.trim(), rect, imgWidth, imgHeight));
                         }
-
-                        if (blocks.isEmpty()) {
-                            callback.onSuccess(blocks);
-                            return;
-                        }
-
-                        // 识别成功后，无缝调用 Google 翻译
-                        GoogleTranslator.translateBlocks(blocks, new GoogleTranslator.TranslationCallback() {
-                            @Override
-                            public void onSuccess(@NonNull List<MangaTextBlock> translatedBlocks) {
-                                callback.onSuccess(translatedBlocks);
-                            }
-
-                            @Override
-                            public void onFailure(@NonNull String errorMessage) {
-                                // 翻译即使网络失败，也把原始识别文字返回展示
-                                callback.onSuccess(blocks);
-                            }
-                        });
+                        callback.onSuccess(blocks);
                     })
                     .addOnFailureListener(e -> {
                         Log.e(TAG, "OCR recognition error: " + e.getMessage(), e);
                         callback.onFailure("OCR识别失败: " + e.getMessage());
                     });
         } catch (Throwable t) {
-            Log.e(TAG, "processPageBitmap error: " + t.getMessage(), t);
+            Log.e(TAG, "recognize error: " + t.getMessage(), t);
             callback.onFailure("图像处理错误: " + t.getMessage());
         }
+    }
+
+    /**
+     * OCR + 翻译（兼容旧调用）。回调在主线程。
+     */
+    public void processPageBitmap(@NonNull Bitmap bitmap, @NonNull OcrCallback callback) {
+        recognize(bitmap, new OcrCallback() {
+            @Override
+            public void onSuccess(@NonNull List<MangaTextBlock> blocks) {
+                if (blocks.isEmpty()) {
+                    callback.onSuccess(blocks);
+                    return;
+                }
+                GoogleTranslator.translateBlocks(blocks, new GoogleTranslator.TranslationCallback() {
+                    @Override
+                    public void onSuccess(@NonNull List<MangaTextBlock> translatedBlocks) {
+                        callback.onSuccess(translatedBlocks);
+                    }
+
+                    @Override
+                    public void onFailure(@NonNull String errorMessage) {
+                        callback.onSuccess(blocks);
+                    }
+                });
+            }
+
+            @Override
+            public void onFailure(@NonNull String error) {
+                callback.onFailure(error);
+            }
+        });
+    }
+
+    /**
+     * 同步 OCR，供整本批量翻译的后台线程使用。
+     * 注意：不要在主线程调用，否则会阻塞主线程回调。
+     */
+    @NonNull
+    public List<MangaTextBlock> recognizeSync(@NonNull Bitmap bitmap) {
+        return recognizeSync(bitmap, DEFAULT_SYNC_TIMEOUT_MS);
+    }
+
+    @NonNull
+    public List<MangaTextBlock> recognizeSync(@NonNull Bitmap bitmap, long timeoutMs) {
+        final CountDownLatch latch = new CountDownLatch(1);
+        final java.util.concurrent.atomic.AtomicReference<List<MangaTextBlock>> holder =
+                new java.util.concurrent.atomic.AtomicReference<>(Collections.emptyList());
+
+        recognize(bitmap, new OcrCallback() {
+            @Override
+            public void onSuccess(@NonNull List<MangaTextBlock> blocks) {
+                holder.set(blocks);
+                latch.countDown();
+            }
+
+            @Override
+            public void onFailure(@NonNull String error) {
+                Log.w(TAG, "recognizeSync failed: " + error);
+                holder.set(Collections.emptyList());
+                latch.countDown();
+            }
+        });
+
+        try {
+            if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "recognizeSync timeout after " + timeoutMs + "ms");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return holder.get();
     }
 
     /**

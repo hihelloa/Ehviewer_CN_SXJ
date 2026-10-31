@@ -52,9 +52,15 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.RectF;
 import android.widget.Toast;
+import com.hippo.ehviewer.translation.BatchMangaTranslator;
 import com.hippo.ehviewer.translation.GalleryTranslationOverlay;
+import com.hippo.ehviewer.translation.GoogleTranslator;
 import com.hippo.ehviewer.translation.MangaOcrManager;
 import com.hippo.ehviewer.translation.MangaTextBlock;
+import com.hippo.ehviewer.translation.MangaTranslationCache;
+import com.hippo.ehviewer.translation.ProviderPageSource;
+import com.hippo.ehviewer.translation.SpiderQueenPageSource;
+import com.hippo.ehviewer.translation.TranslationProgressDialog;
 import com.hippo.util.IoThreadPoolExecutor;
 import java.io.File;
 import java.util.List;
@@ -193,6 +199,51 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
     private int mSize;
     private int mCurrentIndex;
 
+    @Nullable
+    private String mTranslationKey;
+    private final Handler mOverlayHandler = new Handler(Looper.getMainLooper());
+    private boolean mOverlaySyncScheduled;
+    private boolean mOverlaySyncPaused;
+
+    /** 翻页/批量翻译完成后，自动贴出已缓存的译文气泡 */
+    private final Runnable mOverlaySyncRunnable = new Runnable() {
+        @Override
+        public void run() {
+            mOverlaySyncScheduled = false;
+            if (mOverlaySyncPaused || mTranslationOverlay == null || !mTranslationOverlay.hasData()) {
+                return;
+            }
+            RectF rect = queryPageRect(mTranslationOverlay.getCurrentPageIndex());
+            if (rect != null && !rect.isEmpty()) {
+                mTranslationOverlay.updateDisplayedRect(rect);
+            }
+            mOverlaySyncScheduled = true;
+            mOverlayHandler.postDelayed(this, 400);
+        }
+    };
+
+    private final BatchMangaTranslator.Listener mBatchListener = new BatchMangaTranslator.Listener() {
+        @Override
+        public void onPageTranslated(@NonNull String key, int pageIndex, @NonNull List<MangaTextBlock> blocks) {
+            if (mTranslationKey == null || !mTranslationKey.equals(key)) {
+                return;
+            }
+            if (pageIndex == mCurrentIndex && Settings.getAutoShowTranslation()) {
+                showCachedTranslation(pageIndex);
+            }
+        }
+
+        @Override
+        public void onBatchFinished(@NonNull String key, int finished, int total, int failed, boolean cancelled) {
+            if (mTranslationKey == null || !mTranslationKey.equals(key)) {
+                return;
+            }
+            if (mCurrentIndex >= 0) {
+                showCachedTranslation(mCurrentIndex);
+            }
+        }
+    };
+
     private boolean canFinish = false;
     private boolean autoTransferring = false;
 
@@ -236,10 +287,6 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             if (mAutoTransferPanel != null) {
                 mAutoTransferPanel.setVisibility(View.INVISIBLE);
             }
-            mBtnTranslateAnimator = null;
-            if (mBtnTranslate != null) {
-                mBtnTranslate.setVisibility(View.INVISIBLE);
-            }
         }
     };
 
@@ -249,7 +296,6 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             if (mSeekBarPanel != null) {
                 hideSlider(mSeekBarPanel, mSeekBarPanelAnimator);
                 hideSlider(mAutoTransferPanel, mAutoTransferAnimator);
-                hideSlider(mBtnTranslate, mBtnTranslateAnimator);
             }
         }
     };
@@ -432,12 +478,22 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         mTranslationOverlay = findViewById(R.id.translation_overlay);
         mBtnTranslate = findViewById(R.id.btn_translate);
         if (mBtnTranslate != null) {
-            mBtnTranslate.setVisibility(View.INVISIBLE);
+            // 常驻显示，不再跟随控制栏隐藏，避免"找不到翻译按钮"
+            mBtnTranslate.setVisibility(View.VISIBLE);
             mBtnTranslate.setOnClickListener(v -> translateCurrentPage());
+            mBtnTranslate.setOnLongClickListener(v -> {
+                showTranslationQuickMenu();
+                return true;
+            });
         }
+
+        mTranslationKey = buildTranslationKey();
+        BatchMangaTranslator.getInstance().addListener(mBatchListener);
 
         mSize = mGalleryProvider.size();
         mCurrentIndex = startPage;
+        // GL 首帧渲染完成后再贴气泡
+        mOverlayHandler.postDelayed(() -> showCachedTranslation(mCurrentIndex), 800);
         if (mGalleryView != null) {
             mLayoutMode = mGalleryView.getLayoutMode();
         }
@@ -540,6 +596,10 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             mGalleryProvider = null;
         }
 
+        BatchMangaTranslator.getInstance().removeListener(mBatchListener);
+        mOverlayHandler.removeCallbacksAndMessages(null);
+        mOverlaySyncScheduled = false;
+
         mMaskView = null;
         mClock = null;
         mProgress = null;
@@ -575,6 +635,11 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
     protected void onPause() {
         super.onPause();
 
+        // GL 线程暂停时不要再抢渲染锁，避免卡死
+        mOverlaySyncPaused = true;
+        mOverlayHandler.removeCallbacks(mOverlaySyncRunnable);
+        mOverlaySyncScheduled = false;
+
         if (mGLRootView != null) {
             mGLRootView.onPause();
         }
@@ -587,6 +652,10 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         applyReadingRefreshRate();
         if (mGLRootView != null) {
             mGLRootView.onResume();
+        }
+        mOverlaySyncPaused = false;
+        if (mTranslationOverlay != null && mTranslationOverlay.hasData()) {
+            startOverlaySync();
         }
     }
 
@@ -952,8 +1021,98 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         }
     }
 
+    @NonNull
+    private String buildTranslationKey() {
+        if (mGalleryInfo != null && mGalleryInfo.gid > 0) {
+            return MangaTranslationCache.keyForGid(mGalleryInfo.gid);
+        }
+        if (mFilename != null && !mFilename.isEmpty()) {
+            return MangaTranslationCache.keyForLocal(mFilename);
+        }
+        if (mUri != null) {
+            return MangaTranslationCache.keyForLocal(mUri.toString());
+        }
+        return MangaTranslationCache.keyForLocal("unknown");
+    }
+
+    /**
+     * 在渲染锁保护下读取页面在屏幕上的实际绘制区域。
+     * 直接在主线程裸调 findPageImageRect() 会读到未完成的布局，导致气泡整体错位。
+     */
+    @Nullable
+    private RectF queryPageRect(int index) {
+        GalleryView galleryView = mGalleryView;
+        GLRootView rootView = mGLRootView;
+        if (galleryView == null || rootView == null || index < 0) {
+            return null;
+        }
+        rootView.lockRenderThread();
+        try {
+            return galleryView.findPageImageRect(index);
+        } catch (Throwable t) {
+            Log.w("GalleryActivity", "findPageImageRect failed: " + t.getMessage());
+            return null;
+        } finally {
+            rootView.unlockRenderThread();
+        }
+    }
+
+    private void startOverlaySync() {
+        if (!mOverlaySyncScheduled) {
+            mOverlaySyncScheduled = true;
+            mOverlayHandler.postDelayed(mOverlaySyncRunnable, 400);
+        }
+    }
+
+    /**
+     * 从本地缓存取出指定页译文并自动贴到画面上。翻页即调用。
+     */
+    private void showCachedTranslation(final int index) {
+        showCachedTranslation(index, false);
+    }
+
+    /**
+     * @param force true 表示用户主动触发，忽略"自动显示"开关
+     */
+    private void showCachedTranslation(final int index, final boolean force) {
+        if (mTranslationOverlay == null || mTranslationKey == null || index < 0) {
+            return;
+        }
+        if (!force && !Settings.getAutoShowTranslation()) {
+            mTranslationOverlay.clear();
+            mTranslationOverlay.setVisibility(View.GONE);
+            return;
+        }
+        final List<MangaTextBlock> blocks = MangaTranslationCache.get(this).getPage(mTranslationKey, index);
+        if (blocks.isEmpty()) {
+            mTranslationOverlay.clear();
+            mTranslationOverlay.setVisibility(View.GONE);
+            return;
+        }
+        RectF rect = queryPageRect(index);
+        if (rect == null || rect.isEmpty()) {
+            // 页面还没排版完成，稍后重试一次
+            mOverlayHandler.postDelayed(() -> {
+                if (mCurrentIndex != index || mTranslationOverlay == null) {
+                    return;
+                }
+                RectF retryRect = queryPageRect(index);
+                if (retryRect == null || retryRect.isEmpty()) {
+                    return;
+                }
+                mTranslationOverlay.setVisibility(View.VISIBLE);
+                mTranslationOverlay.setPageData(index, blocks, retryRect);
+                startOverlaySync();
+            }, 400);
+            return;
+        }
+        mTranslationOverlay.setVisibility(View.VISIBLE);
+        mTranslationOverlay.setPageData(index, blocks, rect);
+        startOverlaySync();
+    }
+
     private void translateCurrentPage() {
-        if (mGalleryProvider == null) {
+        if (mGalleryProvider == null || mTranslationKey == null) {
             Toast.makeText(this, "阅读器未初始化", Toast.LENGTH_SHORT).show();
             return;
         }
@@ -962,76 +1121,170 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             return;
         }
 
-        // 如果当前页已经翻译过，再次点击切换气泡显隐
-        if (mTranslationOverlay != null && mTranslationOverlay.getCurrentPageIndex() == mCurrentIndex && mTranslationOverlay.hasData()) {
-            boolean visible = mTranslationOverlay.getVisibility() == View.VISIBLE;
-            mTranslationOverlay.setVisibility(visible ? View.GONE : View.VISIBLE);
-            Toast.makeText(this, visible ? "已隐藏翻译气泡" : "已恢复翻译气泡", Toast.LENGTH_SHORT).show();
+        final int index = mCurrentIndex;
+        List<MangaTextBlock> cached = MangaTranslationCache.get(this).getPage(mTranslationKey, index);
+        if (!cached.isEmpty()) {
+            // 已翻译过：再次点击切换气泡显隐
+            if (mTranslationOverlay != null && mTranslationOverlay.getCurrentPageIndex() == index
+                    && mTranslationOverlay.hasData()) {
+                boolean visible = mTranslationOverlay.isOverlayVisible();
+                mTranslationOverlay.setOverlayVisible(!visible);
+                Toast.makeText(this, visible ? "已隐藏翻译气泡" : "已恢复翻译气泡", Toast.LENGTH_SHORT).show();
+            } else {
+                showCachedTranslation(index, true);
+                Toast.makeText(this, "已显示本页缓存译文", Toast.LENGTH_SHORT).show();
+            }
             return;
         }
 
-        Toast.makeText(this, "正在提取并翻译第 " + (mCurrentIndex + 1) + " 页漫画...", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "正在翻译第 " + (index + 1) + " 页…", Toast.LENGTH_SHORT).show();
+        translatePageAsync(index, true);
+    }
 
-        final int targetIndex = mCurrentIndex;
+    /**
+     * 单页翻译：后台取图 -> OCR -> 翻译 -> 写缓存 -> 贴字。
+     */
+    private void translatePageAsync(final int index, final boolean toastResult) {
+        final GalleryProvider2 provider = mGalleryProvider;
+        final String key = mTranslationKey;
+        if (provider == null || key == null) {
+            return;
+        }
+        final Context appContext = getApplicationContext();
         IoThreadPoolExecutor.Companion.getInstance().execute(() -> {
+            File tempFile = new File(getCacheDir(), "manga_tl_single_" + index + ".img");
             try {
-                File cacheDir = getCacheDir();
-                File tempFile = new File(cacheDir, "manga_trans_cache.jpg");
-                if (tempFile.exists()) {
-                    tempFile.delete();
+                ProviderPageSource source = new ProviderPageSource(provider);
+                // 单页最多等 90 秒，期间反复请求下载，避免偶发失败直接放弃
+                final long deadline = System.currentTimeMillis() + 90_000L;
+                boolean fetched = false;
+                while (System.currentTimeMillis() < deadline) {
+                    if (source.fetchPage(index, tempFile, () -> System.currentTimeMillis() > deadline)) {
+                        fetched = true;
+                        break;
+                    }
+                    Thread.sleep(1000);
                 }
-                boolean saved = mGalleryProvider.save(targetIndex, UniFile.fromFile(tempFile));
-                if (!saved || !tempFile.exists() || tempFile.length() <= 0) {
-                    runOnUiThread(() -> Toast.makeText(GalleryActivity.this, "当前页面尚未加载完成，请稍后再试", Toast.LENGTH_SHORT).show());
+                if (!fetched) {
+                    runOnUiThread(() -> Toast.makeText(GalleryActivity.this,
+                            R.string.translate_not_ready, Toast.LENGTH_SHORT).show());
                     return;
                 }
-
-                Bitmap bitmap = BitmapFactory.decodeFile(tempFile.getAbsolutePath());
+                Bitmap bitmap = BatchMangaTranslator.decodeSampled(tempFile.getAbsolutePath(), 1800);
                 if (bitmap == null) {
-                    runOnUiThread(() -> Toast.makeText(GalleryActivity.this, "图片解码失败", Toast.LENGTH_SHORT).show());
+                    runOnUiThread(() -> Toast.makeText(GalleryActivity.this,
+                            "图片解码失败", Toast.LENGTH_SHORT).show());
                     return;
                 }
-
+                List<MangaTextBlock> blocks;
+                try {
+                    blocks = MangaOcrManager.getInstance().recognizeSync(bitmap);
+                } finally {
+                    bitmap.recycle();
+                }
+                if (blocks.isEmpty()) {
+                    MangaTranslationCache.get(appContext).putPage(key, index, blocks);
+                    runOnUiThread(() -> Toast.makeText(GalleryActivity.this,
+                            R.string.translate_nothing, Toast.LENGTH_SHORT).show());
+                    return;
+                }
+                GoogleTranslator.translateBlocksSync(blocks);
+                MangaTranslationCache.get(appContext).putPage(key, index, blocks);
+                final int count = blocks.size();
                 runOnUiThread(() -> {
-                    RectF pageRect = null;
-                    if (mGalleryView != null) {
-                        pageRect = mGalleryView.findPageImageRect(targetIndex);
+                    if (index == mCurrentIndex) {
+                        showCachedTranslation(index, true);
                     }
-                    if (pageRect == null || pageRect.isEmpty()) {
-                        int viewW = mGLRootView != null ? mGLRootView.getWidth() : getResources().getDisplayMetrics().widthPixels;
-                        int viewH = mGLRootView != null ? mGLRootView.getHeight() : getResources().getDisplayMetrics().heightPixels;
-                        float scale = Math.min((float) viewW / bitmap.getWidth(), (float) viewH / bitmap.getHeight());
-                        float w = bitmap.getWidth() * scale;
-                        float h = bitmap.getHeight() * scale;
-                        pageRect = new RectF((viewW - w) / 2f, (viewH - h) / 2f, (viewW + w) / 2f, (viewH + h) / 2f);
+                    if (toastResult) {
+                        Toast.makeText(GalleryActivity.this,
+                                getString(R.string.translate_page_done, index + 1, count),
+                                Toast.LENGTH_SHORT).show();
                     }
-
-                    final RectF finalPageRect = pageRect;
-                    MangaOcrManager.getInstance().processPageBitmap(bitmap, new MangaOcrManager.OcrCallback() {
-                        @Override
-                        public void onSuccess(@NonNull List<MangaTextBlock> blocks) {
-                            if (blocks.isEmpty()) {
-                                Toast.makeText(GalleryActivity.this, "本页未检测到明显文字", Toast.LENGTH_SHORT).show();
-                            } else {
-                                if (mTranslationOverlay != null) {
-                                    mTranslationOverlay.setVisibility(View.VISIBLE);
-                                    mTranslationOverlay.setPageData(targetIndex, blocks, finalPageRect);
-                                }
-                                Toast.makeText(GalleryActivity.this, "翻译完成，已覆盖 " + blocks.size() + " 处气泡（点击气泡可显隐）", Toast.LENGTH_SHORT).show();
-                            }
-                        }
-
-                        @Override
-                        public void onFailure(@NonNull String error) {
-                            Toast.makeText(GalleryActivity.this, error, Toast.LENGTH_SHORT).show();
-                        }
-                    });
                 });
             } catch (Throwable t) {
-                Log.e("GalleryActivity", "translateCurrentPage error: " + t.getMessage(), t);
-                runOnUiThread(() -> Toast.makeText(GalleryActivity.this, "翻译处理异常: " + t.getMessage(), Toast.LENGTH_SHORT).show());
+                Log.e("GalleryActivity", "translatePageAsync error: " + t.getMessage(), t);
+                runOnUiThread(() -> Toast.makeText(GalleryActivity.this,
+                        "翻译失败：" + t.getMessage(), Toast.LENGTH_SHORT).show());
+            } finally {
+                if (tempFile.exists() && !tempFile.delete()) {
+                    Log.w("GalleryActivity", "Failed to delete " + tempFile);
+                }
             }
         });
+    }
+
+    /**
+     * 启动整本翻译（阅读器入口）。
+     */
+    private void startBatchTranslation() {
+        if (mGalleryProvider == null || mTranslationKey == null) {
+            Toast.makeText(this, "阅读器未初始化", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        BatchMangaTranslator translator = BatchMangaTranslator.getInstance();
+        if (!translator.isRunning(mTranslationKey)) {
+            BatchMangaTranslator.PageSource source;
+            if (mGalleryInfo != null && mGalleryInfo.gid > 0) {
+                // 网络画廊用进程级 SpiderQueen，退出阅读器后仍能继续翻译
+                source = SpiderQueenPageSource.create(getApplicationContext(), mGalleryInfo);
+            } else {
+                source = new ProviderPageSource(mGalleryProvider);
+            }
+            if (translator.start(getApplicationContext(), mTranslationKey, source)) {
+                Toast.makeText(this, R.string.translate_started, Toast.LENGTH_SHORT).show();
+            }
+        }
+        TranslationProgressDialog.show(this, mTranslationKey);
+    }
+
+    /**
+     * 悬浮按钮长按：把整本翻译、单页翻译、气泡开关、清缓存集中在这里。
+     */
+    private void showTranslationQuickMenu() {
+        if (mTranslationKey == null) {
+            return;
+        }
+        final boolean autoShow = Settings.getAutoShowTranslation();
+        final CharSequence[] items = new CharSequence[]{
+                getString(R.string.translate_whole_manga),
+                getString(R.string.translate_current_page),
+                autoShow ? "关闭自动显示气泡" : "开启自动显示气泡",
+                getString(R.string.translate_clear_cache)
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.translate_progress_title)
+                .setItems(items, (dialog, which) -> {
+                    switch (which) {
+                        case 0:
+                            startBatchTranslation();
+                            break;
+                        case 1:
+                            translateCurrentPage();
+                            break;
+                        case 2:
+                            Settings.putAutoShowTranslation(!autoShow);
+                            if (autoShow) {
+                                if (mTranslationOverlay != null) {
+                                    mTranslationOverlay.clear();
+                                    mTranslationOverlay.setVisibility(View.GONE);
+                                }
+                            } else {
+                                showCachedTranslation(mCurrentIndex);
+                            }
+                            Toast.makeText(this, autoShow ? "已关闭自动显示" : "已开启自动显示",
+                                    Toast.LENGTH_SHORT).show();
+                            break;
+                        case 3:
+                            MangaTranslationCache.get(this).clear(mTranslationKey);
+                            if (mTranslationOverlay != null) {
+                                mTranslationOverlay.clear();
+                                mTranslationOverlay.setVisibility(View.GONE);
+                            }
+                            Toast.makeText(this, R.string.translate_cleared, Toast.LENGTH_SHORT).show();
+                            break;
+                    }
+                })
+                .show();
     }
 
     /**
@@ -1303,6 +1556,10 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         private final SwitchCompat mReadingFullscreen;
         private final SwitchCompat mCustomScreenLightness;
         private final SeekBar mScreenLightness;
+        private final SwitchCompat mAutoShowTranslation;
+
+        @Nullable
+        private AlertDialog mDialog;
 
         @SuppressLint("InflateParams")
         public GalleryMenuHelper(Context context) {
@@ -1322,6 +1579,28 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             mReadingFullscreen = mView.findViewById(R.id.reading_fullscreen);
             mCustomScreenLightness = mView.findViewById(R.id.custom_screen_lightness);
             mScreenLightness = mView.findViewById(R.id.screen_lightness);
+            mAutoShowTranslation = mView.findViewById(R.id.menu_auto_show_translation);
+
+            View translateWhole = mView.findViewById(R.id.menu_translate_whole);
+            View translatePage = mView.findViewById(R.id.menu_translate_page);
+            translateWhole.setOnClickListener(v -> {
+                dismissMenu();
+                startBatchTranslation();
+            });
+            translatePage.setOnClickListener(v -> {
+                dismissMenu();
+                translateCurrentPage();
+            });
+            mAutoShowTranslation.setChecked(Settings.getAutoShowTranslation());
+            mAutoShowTranslation.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                Settings.putAutoShowTranslation(isChecked);
+                if (isChecked) {
+                    showCachedTranslation(mCurrentIndex);
+                } else if (mTranslationOverlay != null) {
+                    mTranslationOverlay.clear();
+                    mTranslationOverlay.setVisibility(View.GONE);
+                }
+            });
 
             mScreenRotation.setSelection(Settings.getScreenRotation());
             mReadingDirection.setSelection(Settings.getReadingDirection());
@@ -1362,6 +1641,16 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
 
         public View getView() {
             return mView;
+        }
+
+        public void attachDialog(@Nullable AlertDialog dialog) {
+            mDialog = dialog;
+        }
+
+        private void dismissMenu() {
+            if (mDialog != null) {
+                mDialog.dismiss();
+            }
         }
 
         @Override
@@ -1479,7 +1768,10 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         private void onTapMenuArea() {
             AlertDialog.Builder builder = new AlertDialog.Builder(GalleryActivity.this);
             GalleryMenuHelper helper = new GalleryMenuHelper(builder.getContext());
-            builder.setTitle(R.string.gallery_menu_title).setView(helper.getView()).setPositiveButton(android.R.string.ok, helper).show();
+            builder.setTitle(R.string.gallery_menu_title).setView(helper.getView()).setPositiveButton(android.R.string.ok, helper);
+            AlertDialog dialog = builder.create();
+            helper.attachDialog(dialog);
+            dialog.show();
         }
 
         private void onTapSliderArea() {
@@ -1492,12 +1784,13 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             if (mSeekBarPanel.getVisibility() == View.VISIBLE) {
                 hideSlider(mSeekBarPanel, mSeekBarPanelAnimator);
                 hideSlider(mAutoTransferPanel, mAutoTransferAnimator);
-                hideSlider(mBtnTranslate, mBtnTranslateAnimator);
             } else {
                 showSlider(mSeekBarPanel, mSeekBarPanelAnimator);
                 showSlider(mAutoTransferPanel, mAutoTransferAnimator);
-                showSlider(mBtnTranslate, mBtnTranslateAnimator);
                 SimpleHandler.getInstance().postDelayed(mHideSliderRunnable, HIDE_SLIDER_DELAY);
+            }
+            if (mBtnTranslate != null) {
+                mBtnTranslate.setVisibility(View.VISIBLE);
             }
         }
 
@@ -1530,6 +1823,8 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
                     }
                     updateSlider();
                     updateProgress();
+                    // 翻页即查缓存，有译文就自动贴上
+                    showCachedTranslation(mValue);
                     break;
                 case KEY_TAP_MENU_AREA:
                     onTapMenuArea();

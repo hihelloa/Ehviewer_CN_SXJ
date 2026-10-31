@@ -1006,4 +1006,25 @@
     <string name="import_album_already_imported">相册已导入</string>
     <string name="import_album_success">成功导入 %d 张图片</string>
 
+
+    <!-- 漫画翻译 -->
+    <string name="translate_whole_manga">翻译整本漫画</string>
+    <string name="translate_whole_manga_short">翻译整本</string>
+    <string name="translate_current_page">翻译当前单页</string>
+    <string name="translate_auto_show">自动显示翻译气泡</string>
+    <string name="translate_progress_title">整本翻译</string>
+    <string name="translate_progress_message">正在识别并翻译… 已完成 %1$d/%2$d 页</string>
+    <string name="translate_dialog_background">后台运行</string>
+    <string name="translate_dialog_cancel">取消翻译</string>
+    <string name="translate_finished">整本翻译完成：成功 %1$d 页，失败 %2$d 页</string>
+    <string name="translate_cancelled">已取消整本翻译：完成 %1$d/%2$d 页</string>
+    <string name="translate_nothing">本页未检测到文字</string>
+    <string name="translate_page_done">第 %1$d 页翻译完成，共 %2$d 处</string>
+    <string name="translate_not_ready">页面尚未加载完成，请稍后重试</string>
+    <string name="translate_started">已开始翻译整本漫画</string>
+    <string name="translate_no_cache">本页还没有翻译，请先翻译整本或单页</string>
+    <string name="translate_button_desc">翻译</string>
+    <string name="translate_clear_cache">清除本书翻译缓存</string>
+    <string name="translate_cleared">已清除本书翻译缓存</string>
+    <string name="translate_more">更多翻译选项</string>
 </resources>

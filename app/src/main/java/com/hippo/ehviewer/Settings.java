@@ -689,6 +689,18 @@ public class Settings {
         putBoolean(KEY_SHOW_BATTERY, value);
     }
 
+    private static final String KEY_AUTO_SHOW_TRANSLATION = "gallery_auto_show_translation";
+    private static final boolean DEFAULT_AUTO_SHOW_TRANSLATION = true;
+
+    /** 翻页时自动显示已缓存的翻译气泡 */
+    public static boolean getAutoShowTranslation() {
+        return getBoolean(KEY_AUTO_SHOW_TRANSLATION, DEFAULT_AUTO_SHOW_TRANSLATION);
+    }
+
+    public static void putAutoShowTranslation(boolean value) {
+        putBoolean(KEY_AUTO_SHOW_TRANSLATION, value);
+    }
+
     private static final String KEY_SHOW_PAGE_INTERVAL = "gallery_show_page_interval";
     private static final boolean DEFAULT_SHOW_PAGE_INTERVAL = true;
 

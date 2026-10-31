@@ -1095,4 +1095,25 @@
     <string name="import_album_success">Imported %d images successfully</string>
     <!-- TagSelectActivity -->
     <string name="tag_search_entrance">Tag Selector</string>
+
+    <!-- Manga translation -->
+    <string name="translate_whole_manga">Translate whole manga</string>
+    <string name="translate_whole_manga_short">Translate</string>
+    <string name="translate_current_page">Translate current page</string>
+    <string name="translate_auto_show">Auto show translation bubbles</string>
+    <string name="translate_progress_title">Whole manga translation</string>
+    <string name="translate_progress_message">Recognizing and translating… %1$d/%2$d pages done</string>
+    <string name="translate_dialog_background">Run in background</string>
+    <string name="translate_dialog_cancel">Cancel</string>
+    <string name="translate_finished">Translation finished: %1$d succeeded, %2$d failed</string>
+    <string name="translate_cancelled">Translation cancelled: %1$d/%2$d pages done</string>
+    <string name="translate_nothing">No text detected on this page</string>
+    <string name="translate_page_done">Page %1$d translated, %2$d bubbles</string>
+    <string name="translate_not_ready">Page is not loaded yet, please retry later</string>
+    <string name="translate_started">Whole manga translation started</string>
+    <string name="translate_no_cache">No translation for this page yet</string>
+    <string name="translate_button_desc">Translate</string>
+    <string name="translate_clear_cache">Clear translation cache of this book</string>
+    <string name="translate_cleared">Translation cache cleared</string>
+    <string name="translate_more">More translation options</string>
 </resources>

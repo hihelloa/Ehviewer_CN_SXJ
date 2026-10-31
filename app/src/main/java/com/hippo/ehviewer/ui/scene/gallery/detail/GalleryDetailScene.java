@@ -91,6 +91,10 @@ import com.hippo.ehviewer.dao.Filter;
 import com.hippo.ehviewer.spider.SpiderQueen;
 import com.hippo.ehviewer.ui.CommonOperations;
 import com.hippo.ehviewer.ui.GalleryActivity;
+import com.hippo.ehviewer.translation.BatchMangaTranslator;
+import com.hippo.ehviewer.translation.MangaTranslationCache;
+import com.hippo.ehviewer.translation.SpiderQueenPageSource;
+import com.hippo.ehviewer.translation.TranslationProgressDialog;
 import com.hippo.ehviewer.ui.MainActivity;
 import com.hippo.ehviewer.ui.annotation.WholeLifeCircle;
 import com.hippo.ehviewer.ui.dialog.ArchiverDownloadDialog;
@@ -210,6 +214,8 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
     private TextView mHaveNewVersion;
     @Nullable
     private View mRead;
+    @Nullable
+    private TextView mTranslate;
     // Below header
     @Nullable
     private View mBelowHeader;
@@ -575,6 +581,9 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
         mHaveNewVersion = (TextView) ViewUtils.$$(mHeader, R.id.new_version);
         mArchiverDownloadProgress = (ArchiverDownloadProgress) ViewUtils.$$(mHeader, R.id.archiver_download_progress);
         mRead = ViewUtils.$$(mActionGroup, R.id.read);
+        mTranslate = (TextView) ViewUtils.$$(mActionGroup, R.id.translate);
+        Ripple.addRipple(mTranslate, isDarkTheme);
+        mTranslate.setOnClickListener(this);
         Ripple.addRipple(mThumb, isDarkTheme);
         Ripple.addRipple(mOtherActions, isDarkTheme);
         Ripple.addRipple(mDownload, isDarkTheme);
@@ -722,6 +731,7 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
         mDownload = null;
         mHaveNewVersion = null;
         mRead = null;
+        mTranslate = null;
         mBelowHeader = null;
         mArchiverDownloadProgress = null;
 
@@ -1434,6 +1444,35 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
         }
     }
 
+    /**
+     * 详情页入口：不进入阅读器也能把整本翻译跑完。
+     */
+    private void startWholeTranslation() {
+        GalleryInfo info = mGalleryInfo != null ? mGalleryInfo : mGalleryDetail;
+        if (info == null) {
+            Toast.makeText(getContext(), "画廊信息尚未加载完成", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (info.gid <= 0) {
+            Toast.makeText(getContext(), "本地画廊请进入阅读器后使用翻译", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String key = MangaTranslationCache.keyForGid(info.gid);
+        BatchMangaTranslator translator = BatchMangaTranslator.getInstance();
+        if (!translator.isRunning(key)) {
+            Context context = getContext();
+            if (context == null) {
+                return;
+            }
+            SpiderQueenPageSource source = SpiderQueenPageSource.create(context.getApplicationContext(), info);
+            translator.start(context.getApplicationContext(), key, source);
+        }
+        Activity activity = getActivity2();
+        if (activity != null) {
+            TranslationProgressDialog.show(activity, key);
+        }
+    }
+
     @Override
     public void onClick(View v) {
         mContext = getEHContext();
@@ -1477,6 +1516,8 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
                 return;
             }
             myUpdateDialog.showSelectDialog(mGalleryDetail);
+        } else if (mTranslate == v) {
+            startWholeTranslation();
         } else if (mRead == v) {
             GalleryInfo galleryInfo = null;
             if (mGalleryInfo != null) {
