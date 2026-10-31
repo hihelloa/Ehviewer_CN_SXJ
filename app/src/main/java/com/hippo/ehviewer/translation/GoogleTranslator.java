@@ -33,7 +33,9 @@ public class GoogleTranslator {
     private static final String TAG = "GoogleTranslator";
     private static final String TRANSLATE_URL = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=";
     private static final int MAX_QUERY_LENGTH = 1500;
-    private static final int MAX_RETRY = 2;
+    private static final int MAX_RETRY = 3;
+    /** 块之间的最小间隔，降低免费接口的突发速率，减少 429。 */
+    private static final long BLOCK_INTERVAL_MS = 120L;
     private static final ExecutorService sExecutor = Executors.newFixedThreadPool(3);
     private static final Handler sMainHandler = new Handler(Looper.getMainLooper());
     private static volatile OkHttpClient sClient;
@@ -169,6 +171,8 @@ public class GoogleTranslator {
             } else {
                 block.setTranslatedText(original);
             }
+            // 稍微放慢节奏，避免整页几十个请求瞬间打满免费接口
+            sleep(BLOCK_INTERVAL_MS);
         }
         return success;
     }

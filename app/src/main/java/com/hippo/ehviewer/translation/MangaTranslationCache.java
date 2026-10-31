@@ -88,7 +88,16 @@ public class MangaTranslationCache {
             if (blocks == null || blocks.isEmpty()) {
                 return Collections.emptyList();
             }
-            return new ArrayList<>(blocks);
+            // 必须深拷贝：覆盖层会修改 visible 等 UI 状态，
+            // 若直接返回缓存里的对象，用户点掉的气泡会被永久写回缓存。
+            List<MangaTextBlock> copy = new ArrayList<>(blocks.size());
+            for (MangaTextBlock block : blocks) {
+                MangaTextBlock item = new MangaTextBlock(block.originalText,
+                        new Rect(block.boundingBox), block.imageWidth, block.imageHeight);
+                item.setTranslatedText(block.translatedText);
+                copy.add(item);
+            }
+            return copy;
         }
     }
 

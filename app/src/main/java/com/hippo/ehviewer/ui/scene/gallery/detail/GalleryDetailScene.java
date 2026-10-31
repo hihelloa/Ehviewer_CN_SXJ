@@ -1465,7 +1465,10 @@ public class GalleryDetailScene extends BaseScene implements View.OnClickListene
                 return;
             }
             SpiderQueenPageSource source = SpiderQueenPageSource.create(context.getApplicationContext(), info);
-            translator.start(context.getApplicationContext(), key, source);
+            if (!translator.start(context.getApplicationContext(), key, source)) {
+                // 已有任务在跑，释放刚申请的引用，避免 SpiderQueen 计数泄漏
+                source.release();
+            }
         }
         Activity activity = getActivity2();
         if (activity != null) {

@@ -20,7 +20,9 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 漫画阅读器原位气泡覆盖层
@@ -31,6 +33,13 @@ public class GalleryTranslationOverlay extends View {
     private final RectF mDisplayedPageRect = new RectF();
     private int mCurrentPageIndex = -1;
     private boolean mIsVisible = true;
+
+    /**
+     * 排版结果缓存。onDraw 与触摸判定会对每个气泡反复调用 getBubbleRect，
+     * 不缓存的话每帧都要重新构建 StaticLayout，整页几十个气泡会明显掉帧。
+     */
+    private final Map<MangaTextBlock, StaticLayout> mLayoutCache = new IdentityHashMap<>();
+    private final Map<MangaTextBlock, Integer> mLayoutWidthCache = new IdentityHashMap<>();
 
     private final Paint mBubblePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mBorderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -105,6 +114,10 @@ public class GalleryTranslationOverlay extends View {
 
     public void setPageData(int pageIndex, @NonNull List<MangaTextBlock> blocks, @NonNull RectF displayedRect) {
         mCurrentPageIndex = pageIndex;
+        if (!mTextBlocks.equals(blocks)) {
+            mLayoutCache.clear();
+            mLayoutWidthCache.clear();
+        }
         mTextBlocks.clear();
         mTextBlocks.addAll(blocks);
         mDisplayedPageRect.set(displayedRect);
@@ -123,6 +136,8 @@ public class GalleryTranslationOverlay extends View {
     public void clear() {
         mCurrentPageIndex = -1;
         mTextBlocks.clear();
+        mLayoutCache.clear();
+        mLayoutWidthCache.clear();
         invalidate();
     }
 
@@ -184,7 +199,7 @@ public class GalleryTranslationOverlay extends View {
 
         float maxWidth = Math.max(mapped.width(), 40f * density);
         int textWidth = Math.max((int) (maxWidth - padH * 2), 20);
-        StaticLayout layout = buildLayout(textOf(block), textWidth);
+        StaticLayout layout = layoutFor(block, textWidth);
 
         float needHeight = layout.getHeight() + padV * 2;
         float needWidth = Math.max(mapped.width(), Math.min(layout.getWidth() + padH * 2, mDisplayedPageRect.width()));
@@ -215,6 +230,21 @@ public class GalleryTranslationOverlay extends View {
             bottom = mDisplayedPageRect.bottom;
         }
         return new RectF(left, top, right, bottom);
+    }
+
+    /**
+     * 取（并按需缓存）排版结果。宽度变化时才重建。
+     */
+    private StaticLayout layoutFor(MangaTextBlock block, int width) {
+        StaticLayout cached = mLayoutCache.get(block);
+        Integer cachedWidth = mLayoutWidthCache.get(block);
+        if (cached != null && cachedWidth != null && cachedWidth == width) {
+            return cached;
+        }
+        StaticLayout layout = buildLayout(textOf(block), width);
+        mLayoutCache.put(block, layout);
+        mLayoutWidthCache.put(block, width);
+        return layout;
     }
 
     private StaticLayout buildLayout(String text, int width) {
@@ -263,8 +293,12 @@ public class GalleryTranslationOverlay extends View {
             canvas.drawRoundRect(rect, radius, radius, mBubblePaint);
             canvas.drawRoundRect(rect, radius, radius, mBorderPaint);
 
-            int textWidth = Math.max((int) (rect.width() - 8f * density), 20);
-            StaticLayout layout = buildLayout(textOf(block), textWidth);
+            // 复用 getBubbleRect 刚算好的布局，避免同一帧内重复构建 StaticLayout
+            StaticLayout layout = mLayoutCache.get(block);
+            if (layout == null) {
+                int textWidth = Math.max((int) (rect.width() - 8f * density), 20);
+                layout = layoutFor(block, textWidth);
+            }
 
             canvas.save();
             float textTop = rect.top + (rect.height() - layout.getHeight()) / 2f;

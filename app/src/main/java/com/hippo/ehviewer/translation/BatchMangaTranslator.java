@@ -29,6 +29,8 @@ public class BatchMangaTranslator {
 
     private static final String TAG = "BatchMangaTranslator";
     private static final int MAX_DECODE_SIZE = 1800;
+    /** 单页取图最多重试次数，约 90 × (20s + 退避) ≈ 40 分钟，避免后台任务永久卡在某一页。 */
+    private static final int MAX_FETCH_RETRY = 90;
 
     private static volatile BatchMangaTranslator sInstance;
 
@@ -152,14 +154,15 @@ public class BatchMangaTranslator {
         try {
             total = task.source.getPageCount();
             if (total <= 0) {
-                // 页数可能还没拉取到，给一次等待机会
-                for (int i = 0; i < 30 && total <= 0; i++) {
+                // 页数可能还没拉取到，给一次等待机会（最多 30 秒）
+                for (int i = 0; i < 60 && total <= 0; i++) {
                     sleep(500);
                     total = task.source.getPageCount();
                 }
             }
             if (total <= 0) {
-                postFinish(key, 0, 0, 0, false);
+                // 页数拿不到，直接结束；最终回调统一在 finally 中发出，避免重复通知
+                Log.w(TAG, "No page count for " + key + ", abort");
                 return;
             }
             task.total = total;
@@ -195,12 +198,24 @@ public class BatchMangaTranslator {
                         }
                         attempt++;
                         postRetry(key, index, attempt);
+                        if (attempt >= MAX_FETCH_RETRY) {
+                            // 重试到上限仍失败：放弃本页继续下一页，避免整本任务永久卡死
+                            Log.w(TAG, "Give up page " + index + " after " + attempt + " attempts");
+                            break;
+                        }
                         // 渐进退避，最长 8 秒一次，避免把站点打挂
                         sleep(Math.min(1500L * attempt, 8000L));
                     }
                     if (!fetched) {
-                        // 被用户取消，不算失败，保留未处理状态
-                        break;
+                        if (task.cancelled.get()) {
+                            // 被用户取消，不算失败，保留未处理状态
+                            break;
+                        }
+                        // 本页彻底失败，跳过继续下一页
+                        task.failed++;
+                        task.finished++;
+                        postProgress(task);
+                        continue;
                     }
                     Bitmap bitmap = decodeSampled(tempFile.getAbsolutePath(), MAX_DECODE_SIZE);
                     if (bitmap == null) {
@@ -215,7 +230,15 @@ public class BatchMangaTranslator {
                     } finally {
                         bitmap.recycle();
                     }
-                    GoogleTranslator.translateBlocksSync(blocks);
+                    int translated = GoogleTranslator.translateBlocksSync(blocks);
+                    if (!blocks.isEmpty() && translated == 0) {
+                        // 整页翻译全部失败（限流/断网），不要写缓存，否则该页会永久停留在原文
+                        Log.w(TAG, "Page " + index + " translation all failed, will retry later");
+                        task.failed++;
+                        task.finished++;
+                        postProgress(task);
+                        continue;
+                    }
                     cache.putPage(key, index, blocks);
                     task.finished++;
                     postPage(key, index, blocks);

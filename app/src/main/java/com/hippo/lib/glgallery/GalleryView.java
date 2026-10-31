@@ -1059,7 +1059,15 @@ public final class GalleryView extends GLView implements GestureRecognizer.Liste
     public RectF findPageImageRect(int id) {
         GalleryPageView page = findPageByIndex(id);
         if (page != null) {
-            return page.getImageDstRect();
+            RectF rect = page.getImageDstRect();
+            if (rect == null) {
+                return null;
+            }
+            // getImageDstRect() 是相对页面容器的坐标，必须叠加页面本身在 GalleryView
+            // 中的位置（bounds 已包含滚动偏移），否则覆盖层气泡会整体偏到左上角。
+            Rect bounds = page.bounds();
+            rect.offset(bounds.left, bounds.top);
+            return rect;
         }
         return null;
     }

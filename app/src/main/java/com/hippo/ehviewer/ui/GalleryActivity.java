@@ -218,7 +218,7 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
                 mTranslationOverlay.updateDisplayedRect(rect);
             }
             mOverlaySyncScheduled = true;
-            mOverlayHandler.postDelayed(this, 400);
+            mOverlayHandler.postDelayed(this, 700);
         }
     };
 
@@ -1068,13 +1068,17 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
      * 从本地缓存取出指定页译文并自动贴到画面上。翻页即调用。
      */
     private void showCachedTranslation(final int index) {
-        showCachedTranslation(index, false);
+        showCachedTranslation(index, false, 0);
     }
 
     /**
      * @param force true 表示用户主动触发，忽略"自动显示"开关
      */
     private void showCachedTranslation(final int index, final boolean force) {
+        showCachedTranslation(index, force, 0);
+    }
+
+    private void showCachedTranslation(final int index, final boolean force, final int retry) {
         if (mTranslationOverlay == null || mTranslationKey == null || index < 0) {
             return;
         }
@@ -1091,19 +1095,17 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         }
         RectF rect = queryPageRect(index);
         if (rect == null || rect.isEmpty()) {
-            // 页面还没排版完成，稍后重试一次
+            // 页面可能还在下载或排版，短间隔重试最多 10 次（约 4 秒），
+            // 避免慢速加载的页面永远贴不上气泡。
+            if (retry >= 10) {
+                return;
+            }
             mOverlayHandler.postDelayed(() -> {
                 if (mCurrentIndex != index || mTranslationOverlay == null) {
                     return;
                 }
-                RectF retryRect = queryPageRect(index);
-                if (retryRect == null || retryRect.isEmpty()) {
-                    return;
-                }
-                mTranslationOverlay.setVisibility(View.VISIBLE);
-                mTranslationOverlay.setPageData(index, blocks, retryRect);
-                startOverlaySync();
-            }, 400);
+                showCachedTranslation(index, force, retry + 1);
+            }, retry < 4 ? 200 : 500);
             return;
         }
         mTranslationOverlay.setVisibility(View.VISIBLE);
@@ -1152,7 +1154,7 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
         }
         final Context appContext = getApplicationContext();
         IoThreadPoolExecutor.Companion.getInstance().execute(() -> {
-            File tempFile = new File(getCacheDir(), "manga_tl_single_" + index + ".img");
+            File tempFile = new File(getCacheDir(), "manga_tl_single_" + System.nanoTime() + "_" + index + ".img");
             try {
                 ProviderPageSource source = new ProviderPageSource(provider);
                 // 单页最多等 90 秒，期间反复请求下载，避免偶发失败直接放弃
@@ -1232,6 +1234,9 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
             }
             if (translator.start(getApplicationContext(), mTranslationKey, source)) {
                 Toast.makeText(this, R.string.translate_started, Toast.LENGTH_SHORT).show();
+            } else {
+                // 已有任务在跑，释放刚申请的 SpiderQueen 引用，避免泄漏
+                source.release();
             }
         }
         TranslationProgressDialog.show(this, mTranslationKey);
