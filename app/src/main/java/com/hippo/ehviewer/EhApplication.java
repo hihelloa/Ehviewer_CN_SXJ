@@ -392,9 +392,11 @@ public class EhApplication extends RecordingApplication {
             OkHttpClient.Builder builder = new OkHttpClient.Builder()
                     .followRedirects(true)
                     .followSslRedirects(true)
-                    .connectTimeout(10, TimeUnit.SECONDS)
-                    .readTimeout(10, TimeUnit.SECONDS)
-                    .writeTimeout(10, TimeUnit.SECONDS)
+                    .connectTimeout(15, TimeUnit.SECONDS)
+                    // 图片下载是流式的，readTimeout 是"两次收到数据包"的间隔；
+                    // 10 秒对慢速 H@H 太短，会不断超时重下，整本下载极慢。
+                    .readTimeout(60, TimeUnit.SECONDS)
+                    .writeTimeout(30, TimeUnit.SECONDS)
 //                    .callTimeout(10, TimeUnit.SECONDS)
                     .connectionPool(connectionPool)  // 添加优化的连接池
                     .retryOnConnectionFailure(true)  // 连接失败时重试
@@ -477,12 +479,14 @@ public class EhApplication extends RecordingApplication {
         EhApplication application = ((EhApplication) context.getApplicationContext());
         if (application.mImageOkHttpClient == null) {
             OkHttpClient.Builder builder = new OkHttpClient.Builder()
-                    .followRedirects(false)
-                    .followSslRedirects(false)
+                    // H@H CDN 大量使用 302 跳转，关闭跟随会导致每次多一轮请求
+                    .followRedirects(true)
+                    .followSslRedirects(true)
                     .connectTimeout(20, TimeUnit.SECONDS)
-                    .readTimeout(20, TimeUnit.SECONDS)
-                    .writeTimeout(20, TimeUnit.SECONDS)
-                    .callTimeout(20, TimeUnit.SECONDS)
+                    .readTimeout(60, TimeUnit.SECONDS)
+                    .writeTimeout(30, TimeUnit.SECONDS)
+                    // 大图在慢速链路上 20 秒根本下不完
+                    .callTimeout(180, TimeUnit.SECONDS)
                     .cookieJar(getEhCookieStore(application))
                     .cache(getOkHttpCache(application))
 //                    .hostnameVerifier((hostname, session) -> true)

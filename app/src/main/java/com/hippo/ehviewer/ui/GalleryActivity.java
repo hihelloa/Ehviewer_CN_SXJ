@@ -1210,10 +1210,10 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
                     return;
                 }
                 boolean baked = false;
-                int count;
+                int countTemp = 0;
                 try {
                     List<MangaTextBlock> blocks = MangaOcrManager.getInstance().recognizeSync(bitmap);
-                    count = blocks.size();
+                    countTemp = blocks.size();
                     if (blocks.isEmpty()) {
                         MangaTranslationCache.get(appContext).putPage(key, index, blocks);
                         runOnUiThread(() -> Toast.makeText(GalleryActivity.this,
@@ -1230,6 +1230,7 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
                     bitmap.recycle();
                 }
                 final boolean bakedOk = baked;
+                final int count = countTemp;
                 runOnUiThread(() -> {
                     if (index == mCurrentIndex) {
                         if (bakedOk) {
