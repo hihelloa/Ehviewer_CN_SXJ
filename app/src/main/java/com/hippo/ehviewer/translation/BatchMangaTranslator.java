@@ -17,9 +17,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 整本漫画后台批量翻译引擎。
@@ -181,127 +183,35 @@ public class BatchMangaTranslator {
                 cache.clear(key);
             }
 
-            for (int index = 0; index < total; index++) {
-                if (task.cancelled.get()) {
-                    break;
+            // 页级并发：取图、OCR、烧录是本地 CPU 活，翻译是跨境网络请求，
+            // 两者重叠能把整本耗时压掉近一半。低内存机型只开一路，避免 OOM。
+            final int pageCount = total;
+            final int concurrency = pageConcurrency();
+            if (concurrency <= 1) {
+                for (int index = 0; index < pageCount && !task.cancelled.get(); index++) {
+                    processPage(task, cache, index);
                 }
-                task.currentIndex = index;
-
-                // 已有译文缓存：正常情况下跳过；
-                // 但若这页还没烧录成"汉化图"，需要再取一次图补烧录。
-                List<MangaTextBlock> cachedBlocks = null;
-                if (cache.isPageProcessed(key, index)) {
-                    if (Settings.getBakedTranslation()
-                            && !BakedTranslationStore.has(task.appContext, key, index)) {
-                        cachedBlocks = cache.getPage(key, index);
-                    }
-                    if (cachedBlocks == null || cachedBlocks.isEmpty()) {
-                        task.finished++;
-                        postProgress(task);
-                        continue;
-                    }
+            } else {
+                Log.i(TAG, "Translate " + key + " with " + concurrency + " workers");
+                final AtomicInteger nextIndex = new AtomicInteger(0);
+                final CountDownLatch latch = new CountDownLatch(concurrency);
+                for (int i = 0; i < concurrency; i++) {
+                    Thread worker = new Thread(() -> {
+                        try {
+                            while (!task.cancelled.get()) {
+                                int index = nextIndex.getAndIncrement();
+                                if (index >= pageCount) {
+                                    break;
+                                }
+                                processPage(task, cache, index);
+                            }
+                        } finally {
+                            latch.countDown();
+                        }
+                    }, "manga-translate-" + i);
+                    worker.start();
                 }
-
-                File tempFile = new File(task.appContext.getCacheDir(),
-                        "manga_tl_" + System.nanoTime() + "_" + index + ".img");
-                try {
-                    // 只翻译已经下载到本地（或可下载到本地）的图片；
-                    // 下载失败就一直重试，直到成功或用户取消。
-                    boolean fetched = false;
-                    int attempt = 0;
-                    while (!task.cancelled.get()) {
-                        if (task.source.fetchPage(index, tempFile, () -> task.cancelled.get())) {
-                            fetched = true;
-                            break;
-                        }
-                        if (task.cancelled.get()) {
-                            break;
-                        }
-                        attempt++;
-                        postRetry(key, index, attempt);
-                        if (MAX_FETCH_RETRY > 0 && attempt >= MAX_FETCH_RETRY) {
-                            // 重试到上限仍失败：放弃本页继续下一页，避免整本任务永久卡死
-                            Log.w(TAG, "Give up page " + index + " after " + attempt + " attempts");
-                            break;
-                        }
-                        // 渐进退避，最长 8 秒一次，避免把站点打挂
-                        sleep(Math.min(1500L * attempt, 8000L));
-                    }
-                    if (!fetched) {
-                        if (task.cancelled.get()) {
-                            // 被用户取消，不算失败，保留未处理状态
-                            break;
-                        }
-                        // 本页彻底失败，跳过继续下一页
-                        task.failed++;
-                        task.finished++;
-                        postProgress(task);
-                        continue;
-                    }
-                    Bitmap bitmap = decodeSampled(tempFile.getAbsolutePath(), MAX_DECODE_SIZE);
-                    if (bitmap == null) {
-                        task.failed++;
-                        task.finished++;
-                        postProgress(task);
-                        continue;
-                    }
-                    boolean recycleSafe = true;
-                    try {
-                        MangaOcrManager.PageOcrResult ocr = cachedBlocks != null
-                                ? null
-                                : MangaOcrManager.getInstance().recognizePageSync(bitmap);
-                        if (ocr != null) {
-                            // 超时的话 ML Kit 可能还在读这张图，不能回收
-                            recycleSafe = ocr.recycleSafe;
-                        }
-                        List<MangaTextBlock> blocks = cachedBlocks != null ? cachedBlocks : ocr.blocks;
-                        int translated;
-                        if (cachedBlocks != null) {
-                            // 旧缓存里可能还留着当时没译出来的空句，补译一遍再烧录，
-                            // 否则这些句子会永远停在空白
-                            GoogleTranslator.fillMissingTranslations(blocks);
-                            translated = GoogleTranslator.countTranslated(blocks);
-                        } else {
-                            translated = GoogleTranslator.translateBlocksSync(blocks);
-                        }
-                        if (!blocks.isEmpty() && translated == 0) {
-                            // 整页翻译全部失败（限流/断网），不要写缓存，否则该页会永久停留在原文
-                            Log.w(TAG, "Page " + index + " translation all failed, will retry later");
-                            task.failed++;
-                            task.finished++;
-                            postProgress(task);
-                            continue;
-                        }
-                        if (translated < blocks.size()) {
-                            // 少量块没译出来：仍然落盘（用户至少能看到已译的部分），
-                            // 但计为异常页，提示里会显示出来
-                            Log.w(TAG, "Page " + index + " partially translated: "
-                                    + translated + "/" + blocks.size());
-                            task.failed++;
-                        }
-                        cache.putPage(key, index, blocks);
-                        // 译文直接烧进图片，阅读时就是"汉化图"，拖动缩放完全跟手
-                        if (Settings.getBakedTranslation()) {
-                            BakedTranslationStore.bake(task.appContext, key, index, bitmap, blocks);
-                        }
-                        task.finished++;
-                        postPage(key, index, blocks);
-                        postProgress(task);
-                    } finally {
-                        if (recycleSafe) {
-                            bitmap.recycle();
-                        }
-                    }
-                } catch (Throwable t) {
-                    Log.e(TAG, "Translate page " + index + " failed: " + t.getMessage(), t);
-                    task.failed++;
-                    task.finished++;
-                    postProgress(task);
-                } finally {
-                    if (tempFile.exists() && !tempFile.delete()) {
-                        Log.w(TAG, "Failed to delete temp file " + tempFile);
-                    }
-                }
+                latch.await();
             }
         } catch (Throwable t) {
             Log.e(TAG, "Batch translate crashed: " + t.getMessage(), t);
@@ -316,6 +226,145 @@ public class BatchMangaTranslator {
             mTasks.remove(key);
             postFinish(key, finished, finalTotal, task.failed, cancelled);
         }
+    }
+
+    /**
+     * 处理单页：取图 → OCR → 翻译 → 写缓存 → 烧录。
+     *
+     * <p>并发调用时每页只会被一个线程处理（页码由原子计数器分配），
+     * 页与页之间没有共享状态，只有进度计数需要同步。
+     */
+    private void processPage(@NonNull Task task, @NonNull MangaTranslationCache cache, int index) {
+        String key = task.key;
+        if (task.cancelled.get()) {
+            return;
+        }
+        task.currentIndex = index;
+
+        // 已有译文缓存：正常情况下跳过；
+        // 但若这页还没烧录成"汉化图"，需要再取一次图补烧录。
+        List<MangaTextBlock> cachedBlocks = null;
+        if (cache.isPageProcessed(key, index)) {
+            if (Settings.getBakedTranslation()
+                    && !BakedTranslationStore.has(task.appContext, key, index)) {
+                cachedBlocks = cache.getPage(key, index);
+            }
+            if (cachedBlocks == null || cachedBlocks.isEmpty()) {
+                countPage(task, false);
+                return;
+            }
+        }
+
+        File tempFile = new File(task.appContext.getCacheDir(),
+                "manga_tl_" + System.nanoTime() + "_" + index + ".img");
+        try {
+            // 只翻译已经下载到本地（或可下载到本地）的图片；
+            // 下载失败就一直重试，直到成功或用户取消。
+            boolean fetched = false;
+            int attempt = 0;
+            while (!task.cancelled.get()) {
+                if (task.source.fetchPage(index, tempFile, () -> task.cancelled.get())) {
+                    fetched = true;
+                    break;
+                }
+                if (task.cancelled.get()) {
+                    break;
+                }
+                attempt++;
+                postRetry(key, index, attempt);
+                if (MAX_FETCH_RETRY > 0 && attempt >= MAX_FETCH_RETRY) {
+                    // 重试到上限仍失败：放弃本页继续下一页，避免整本任务永久卡死
+                    Log.w(TAG, "Give up page " + index + " after " + attempt + " attempts");
+                    break;
+                }
+                // 渐进退避，最长 8 秒一次，避免把站点打挂
+                sleep(Math.min(1500L * attempt, 8000L));
+            }
+            if (!fetched) {
+                if (task.cancelled.get()) {
+                    // 被用户取消，不算失败，保留未处理状态
+                    return;
+                }
+                countPage(task, true);
+                return;
+            }
+            Bitmap bitmap = decodeSampled(tempFile.getAbsolutePath(), MAX_DECODE_SIZE);
+            if (bitmap == null) {
+                countPage(task, true);
+                return;
+            }
+            boolean recycleSafe = true;
+            try {
+                MangaOcrManager.PageOcrResult ocr = cachedBlocks != null
+                        ? null
+                        : MangaOcrManager.getInstance().recognizePageSync(bitmap);
+                if (ocr != null) {
+                    // 超时的话 ML Kit 可能还在读这张图，不能回收
+                    recycleSafe = ocr.recycleSafe;
+                }
+                List<MangaTextBlock> blocks = cachedBlocks != null ? cachedBlocks : ocr.blocks;
+                int translated;
+                if (cachedBlocks != null) {
+                    // 旧缓存里可能还留着当时没译出来的空句，补译一遍再烧录，
+                    // 否则这些句子会永远停在空白
+                    GoogleTranslator.fillMissingTranslations(blocks);
+                    translated = GoogleTranslator.countTranslated(blocks);
+                } else {
+                    translated = GoogleTranslator.translateBlocksSync(blocks);
+                }
+                if (!blocks.isEmpty() && translated == 0) {
+                    // 整页翻译全部失败（限流/断网），不要写缓存，否则该页会永久停留在原文
+                    Log.w(TAG, "Page " + index + " translation all failed, will retry later");
+                    countPage(task, true);
+                    return;
+                }
+                boolean partial = translated < blocks.size();
+                if (partial) {
+                    // 少量块没译出来：仍然落盘（用户至少能看到已译的部分），
+                    // 但计为异常页，提示里会显示出来
+                    Log.w(TAG, "Page " + index + " partially translated: "
+                            + translated + "/" + blocks.size());
+                }
+                cache.putPage(key, index, blocks);
+                // 译文直接烧进图片，阅读时就是"汉化图"，拖动缩放完全跟手
+                if (Settings.getBakedTranslation()) {
+                    BakedTranslationStore.bake(task.appContext, key, index, bitmap, blocks);
+                }
+                postPage(key, index, blocks);
+                countPage(task, partial);
+            } finally {
+                if (recycleSafe) {
+                    bitmap.recycle();
+                }
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "Translate page " + index + " failed: " + t.getMessage(), t);
+            countPage(task, true);
+        } finally {
+            if (tempFile.exists() && !tempFile.delete()) {
+                Log.w(TAG, "Failed to delete temp file " + tempFile);
+            }
+        }
+    }
+
+    /** 更新进度计数。多线程并发时必须同步，否则 finished 会丢计数。 */
+    private void countPage(@NonNull Task task, boolean failed) {
+        synchronized (task) {
+            if (failed) {
+                task.failed++;
+            }
+            task.finished++;
+        }
+        postProgress(task);
+    }
+
+    /**
+     * 同时处理几页。单页解码后约 13MB，烧录时还要复制一份可绘制的位图，
+     * 两页并行的峰值内存接近 80MB，堆不够大就老老实实单线程。
+     */
+    private static int pageConcurrency() {
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        return maxMemory >= 192L * 1024 * 1024 ? 2 : 1;
     }
 
     private void postProgress(@NonNull Task task) {

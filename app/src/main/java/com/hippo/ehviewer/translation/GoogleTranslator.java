@@ -14,11 +14,15 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -38,9 +42,14 @@ public class GoogleTranslator {
     private static final int MAX_RETRY = 3;
     /** 批量请求的 UTF-8 字节上限：中文 URL 编码后约 9 字节/字，超了会 414。 */
     private static final int MAX_BATCH_BYTES = 3500;
-    /** 块之间的最小间隔，降低免费接口的突发速率，减少 429。 */
-    private static final long BLOCK_INTERVAL_MS = 120L;
+    /** 逐块翻译时的并发数。跨境访问翻译接口单次往返 1~2 秒，串行翻一页要几十秒。 */
+    private static final int BLOCK_CONCURRENCY = 3;
+    /** 提交任务的间隔，避免瞬间打满免费接口触发 429。 */
+    private static final long BLOCK_INTERVAL_MS = 60L;
+    /** 连续这么多个块失败，判定为网络不通，本页剩余块直接跳过，不再逐个等超时。 */
+    private static final int CIRCUIT_BREAK_AFTER = 4;
     private static final ExecutorService sExecutor = Executors.newFixedThreadPool(3);
+    private static final ExecutorService sBlockExecutor = Executors.newFixedThreadPool(BLOCK_CONCURRENCY);
     private static final Handler sMainHandler = new Handler(Looper.getMainLooper());
     private static volatile OkHttpClient sClient;
 
@@ -103,7 +112,9 @@ public class GoogleTranslator {
             } catch (Throwable e) {
                 Log.e(TAG, "translateText failed (attempt " + attempt + "): " + e.getMessage());
                 if (attempt < MAX_RETRY) {
-                    sleep(500L * (attempt + 1));
+                    // 失败重试别等太久：真断网时每个块要卡满超时，等 0.5s 还是 1.5s 没有区别，
+                    // 但偶发抖动时短间隔能明显减少整页耗时
+                    sleep(300L * (attempt + 1));
                 }
             }
         }
@@ -164,6 +175,12 @@ public class GoogleTranslator {
         if (batch < 0) {
             batch = translateBlocksOneByOne(blocks);
         }
+        // 一句都没翻出来，基本是断网或被限流：再补两轮只是把同样的超时重跑一遍，
+        // 一页能卡好几分钟。直接返回，让调用方把整页留到下次重试。
+        if (countTranslated(blocks) == 0) {
+            Log.w(TAG, "No block translated, give up this page");
+            return 0;
+        }
         // 免费接口偶发限流会让个别块留空，补两轮，尽量把整页译全
         for (int round = 0; round < 2; round++) {
             List<MangaTextBlock> missing = collectMissing(blocks);
@@ -171,7 +188,7 @@ public class GoogleTranslator {
                 break;
             }
             Log.w(TAG, "retry missing blocks: " + missing.size() + " (round " + (round + 1) + ")");
-            sleep(600L * (round + 1));
+            sleep(400L * (round + 1));
             translateBlocksOneByOne(missing);
         }
         return countTranslated(blocks);
@@ -270,33 +287,76 @@ public class GoogleTranslator {
         return success > 0 ? success : -1;
     }
 
+    /**
+     * 逐块翻译。相同原文只翻一次，最多 {@link #BLOCK_CONCURRENCY} 路并发。
+     *
+     * <p>整页批量请求失败时会退到这里。原来是一块一次请求、块之间还 sleep 120ms，
+     * 一页二十来个气泡在跨境网络下要等半分钟以上；现在并发跑，并且连续失败
+     * {@link #CIRCUIT_BREAK_AFTER} 个块就判定网络不通，剩下的块直接放弃，
+     * 避免整页卡在一次次超时上。
+     */
     private static int translateBlocksOneByOne(@NonNull List<MangaTextBlock> blocks) {
-        Map<String, String> memo = new HashMap<>();
-        int success = 0;
+        // 相同原文合并：漫画里"嗯""啊""什么"这类重复极多，翻一次填给所有同文块
+        LinkedHashMap<String, List<MangaTextBlock>> groups = new LinkedHashMap<>();
         for (MangaTextBlock block : blocks) {
             String original = block.originalText == null ? "" : block.originalText.trim();
             if (original.isEmpty()) {
                 continue;
             }
-            String cached = memo.get(original);
-            if (cached != null) {
-                block.setTranslatedText(cached);
-                success++;
-                continue;
+            List<MangaTextBlock> same = groups.get(original);
+            if (same == null) {
+                same = new ArrayList<>();
+                groups.put(original, same);
             }
-            String translated = translateText(original);
-            if (translated != null && !translated.isEmpty()) {
-                block.setTranslatedText(translated);
-                memo.put(original, translated);
-                success++;
-            } else {
-                // 不要把日文写回译文：烧录时会把原文重画一遍，糊在气泡上
-                block.setTranslatedText("");
+            same.add(block);
+        }
+        if (groups.isEmpty()) {
+            return 0;
+        }
+
+        AtomicInteger success = new AtomicInteger();
+        AtomicInteger consecutiveFailures = new AtomicInteger();
+        AtomicBoolean giveUp = new AtomicBoolean(false);
+        List<Future<?>> futures = new ArrayList<>(groups.size());
+
+        for (Map.Entry<String, List<MangaTextBlock>> entry : groups.entrySet()) {
+            if (giveUp.get()) {
+                break;
             }
-            // 稍微放慢节奏，避免整页几十个请求瞬间打满免费接口
+            final String original = entry.getKey();
+            final List<MangaTextBlock> targets = entry.getValue();
+            futures.add(sBlockExecutor.submit(() -> {
+                if (giveUp.get()) {
+                    return;
+                }
+                String translated = translateText(original);
+                if (translated != null && !translated.isEmpty()) {
+                    for (MangaTextBlock block : targets) {
+                        block.setTranslatedText(translated);
+                    }
+                    success.addAndGet(targets.size());
+                    consecutiveFailures.set(0);
+                } else {
+                    for (MangaTextBlock block : targets) {
+                        // 不要把日文写回译文：烧录时会把原文重画一遍，糊在气泡上
+                        block.setTranslatedText("");
+                    }
+                    if (consecutiveFailures.incrementAndGet() >= CIRCUIT_BREAK_AFTER) {
+                        Log.w(TAG, "Too many failures, skip the rest of this page");
+                        giveUp.set(true);
+                    }
+                }
+            }));
             sleep(BLOCK_INTERVAL_MS);
         }
-        return success;
+
+        for (Future<?> future : futures) {
+            try {
+                future.get(90, TimeUnit.SECONDS);
+            } catch (Throwable ignored) {
+            }
+        }
+        return success.get();
     }
 
     /**
