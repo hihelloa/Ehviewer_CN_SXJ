@@ -217,12 +217,15 @@ public final class LlmTranslator {
                         if (!models.isEmpty()) {
                             return models;
                         }
-                        lastError = "接口没有返回模型列表";
+                        lastError = "接口返回的内容里没有模型名，可手动填写";
                     } else if (response.code() == 404) {
-                        // 路径不对，换下一个候选地址
-                        lastError = "HTTP 404";
+                        // 路径不对，换下一个候选地址；都 404 说明服务商没实现这个接口
+                        lastError = "该服务商没有 /models 接口（HTTP 404），可手动填写模型名";
+                    } else if (response.code() == 401 || response.code() == 403) {
+                        error.append("Key 无效或没有权限（HTTP ").append(response.code()).append("）");
+                        return null;
                     } else {
-                        error.append("HTTP ").append(response.code()).append(": ").append(brief(text));
+                        error.append("HTTP ").append(response.code()).append("：").append(brief(text));
                         return null;
                     }
                 } finally {
@@ -230,25 +233,38 @@ public final class LlmTranslator {
                 }
             } catch (Throwable t) {
                 Log.e(TAG, "fetch models failed: " + t.getMessage());
-                lastError = t.getMessage() == null ? t.toString() : t.getMessage();
+                lastError = describeError(t);
             }
         }
         error.append(lastError == null ? "无法获取模型列表" : lastError);
         return null;
     }
 
-    /** 解析 /models 响应，兼容 data[].id、models[].name 和纯字符串数组三种格式。 */
+    /** 解析 /models 响应，兼容 data[].id、models[].name、data.models[] 和纯字符串数组四种格式。 */
     @NonNull
     private static List<String> parseModels(@NonNull String text) {
         List<String> result = new ArrayList<>();
         try {
-            JSONObject root = JSONObject.parseObject(text);
-            if (root == null) {
-                return result;
-            }
-            JSONArray array = root.getJSONArray("data");
-            if (array == null) {
-                array = root.getJSONArray("models");
+            String trimmed = text.trim();
+            JSONArray array = null;
+            if (trimmed.startsWith("[")) {
+                // 少数服务商直接返回 ["model-a","model-b"]，没有外层对象
+                array = JSONArray.parseArray(trimmed);
+            } else {
+                JSONObject root = JSONObject.parseObject(trimmed);
+                if (root != null) {
+                    array = root.getJSONArray("data");
+                    if (array == null) {
+                        array = root.getJSONArray("models");
+                    }
+                    if (array == null) {
+                        // 少数网关包了两层：{"data":{"models":[...]}}
+                        Object data = root.get("data");
+                        if (data instanceof JSONObject) {
+                            array = ((JSONObject) data).getJSONArray("models");
+                        }
+                    }
+                }
             }
             if (array == null) {
                 return result;
