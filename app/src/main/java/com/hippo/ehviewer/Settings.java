@@ -718,7 +718,7 @@ public class Settings {
     public static final int TRANSLATION_ENGINE_LLM = 1;
 
     public static final String KEY_TRANSLATION_ENGINE = "translation_engine";
-    private static final int DEFAULT_TRANSLATION_ENGINE = TRANSLATION_ENGINE_GOOGLE;
+    private static final int DEFAULT_TRANSLATION_ENGINE = TRANSLATION_ENGINE_LLM;
 
     public static int getTranslationEngine() {
         // ListPreference 往 SharedPreferences 里写的是字符串，必须按字符串读，

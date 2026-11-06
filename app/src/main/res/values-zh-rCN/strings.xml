@@ -1043,5 +1043,11 @@
     <string name="settings_translation_api_testing">正在测试…</string>
     <string name="settings_translation_api_test_ok">连接成功：%s</string>
     <string name="settings_translation_api_test_failed">失败：%s</string>
-    <string name="settings_translation_tip">兼容 OpenAI 的 /chat/completions 接口：DeepSeek、OpenAI、通义千问、Kimi、Ollama 等都能用。译文质量取决于所选模型。已翻译过的页不会因为换引擎而重翻，想重翻请先在阅读器菜单里清除本书翻译缓存。</string>
+    <string name="settings_translation_fetch_models">从上游获取模型</string>
+    <string name="settings_translation_fetch_models_summary">读取服务商的 /models 接口，直接选择可用模型</string>
+    <string name="settings_translation_fetch_models_loading">正在获取模型…</string>
+    <string name="settings_translation_fetch_models_failed">获取失败：%s</string>
+    <string name="settings_translation_fetch_models_need_key">请先填写 API 地址和 Key</string>
+    <string name="settings_translation_fetch_models_done">已选择模型 %s</string>
+    <string name="settings_translation_tip">兼容 OpenAI 的 /chat/completions 接口：DeepSeek、OpenAI、通义千问、Kimi、Ollama 等都能用。默认使用大模型 API，没填 Key 时自动回落到内置免费接口。译文质量取决于所选模型。已翻译过的页不会因为换引擎而重翻，想重翻请先在阅读器菜单里清除本书翻译缓存。</string>
 </resources>

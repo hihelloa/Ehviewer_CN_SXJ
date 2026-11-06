@@ -7,6 +7,7 @@ import android.text.InputType;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.preference.EditTextPreference;
 import androidx.preference.ListPreference;
 import androidx.preference.Preference;
@@ -14,6 +15,8 @@ import androidx.preference.Preference;
 import com.hippo.ehviewer.R;
 import com.hippo.ehviewer.Settings;
 import com.hippo.ehviewer.translation.LlmTranslator;
+
+import java.util.List;
 
 /**
  * 翻译引擎设置：内置免费接口 / 用户自填的大模型 API。
@@ -61,6 +64,14 @@ public class TranslationFragment extends BasePreferenceFragmentCompat {
         if (model != null) {
             model.setOnPreferenceChangeListener((preference, newValue) -> {
                 mHandler.postDelayed(this::refreshSummary, 100);
+                return true;
+            });
+        }
+
+        Preference fetchModelsPref = findPreference("translation_api_fetch_models");
+        if (fetchModelsPref != null) {
+            fetchModelsPref.setOnPreferenceClickListener(preference -> {
+                fetchModels(preference);
                 return true;
             });
         }
@@ -119,6 +130,7 @@ public class TranslationFragment extends BasePreferenceFragmentCompat {
         setEnabled(Settings.KEY_TRANSLATION_API_BASE_URL, enabled);
         setEnabled(Settings.KEY_TRANSLATION_API_KEY, enabled);
         setEnabled(Settings.KEY_TRANSLATION_API_MODEL, enabled);
+        setEnabled("translation_api_fetch_models", enabled);
         setEnabled("translation_api_test", enabled);
     }
 
@@ -127,6 +139,58 @@ public class TranslationFragment extends BasePreferenceFragmentCompat {
         if (preference != null) {
             preference.setEnabled(enabled);
         }
+    }
+
+    /**
+     * 读取上游 /models 接口，弹窗让用户选一个模型。
+     * 有些服务商不实现这个接口，失败时提示原因，用户仍可手填模型名。
+     */
+    private void fetchModels(Preference preference) {
+        if (Settings.getTranslationApiBaseUrl().trim().isEmpty()
+                || Settings.getTranslationApiKey().trim().isEmpty()) {
+            Toast.makeText(requireContext(),
+                    R.string.settings_translation_fetch_models_need_key,
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        preference.setEnabled(false);
+        preference.setSummary(R.string.settings_translation_fetch_models_loading);
+        new Thread(() -> {
+            StringBuilder error = new StringBuilder();
+            List<String> models = LlmTranslator.fetchModels(error);
+            mHandler.post(() -> {
+                if (!isAdded()) {
+                    return;
+                }
+                // 拉取期间用户可能把引擎切回内置接口，别把禁用的项又打开
+                preference.setEnabled(
+                        Settings.getTranslationEngine() == Settings.TRANSLATION_ENGINE_LLM);
+                preference.setSummary(R.string.settings_translation_fetch_models_summary);
+                if (models == null || models.isEmpty()) {
+                    String message = getString(R.string.settings_translation_fetch_models_failed,
+                            error.toString());
+                    Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show();
+                    return;
+                }
+                new AlertDialog.Builder(requireContext())
+                        .setTitle(R.string.settings_translation_fetch_models)
+                        .setItems(models.toArray(new String[0]), (dialog, which) -> {
+                            String model = models.get(which);
+                            Settings.putTranslationApiModel(model);
+                            EditTextPreference modelPreference =
+                                    findPreference(Settings.KEY_TRANSLATION_API_MODEL);
+                            if (modelPreference != null) {
+                                modelPreference.setText(model);
+                            }
+                            refreshSummary();
+                            Toast.makeText(requireContext(),
+                                    getString(R.string.settings_translation_fetch_models_done, model),
+                                    Toast.LENGTH_SHORT).show();
+                        })
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show();
+            });
+        }, "translation-fetch-models").start();
     }
 
     private void runTest(Preference preference) {

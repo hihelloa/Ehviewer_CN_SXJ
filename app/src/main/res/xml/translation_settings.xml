@@ -3,7 +3,7 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
     <com.hippo.preference.ListPreference
-        android:defaultValue="0"
+        android:defaultValue="1"
         android:key="translation_engine"
         android:summary="%s"
         android:title="@string/settings_translation_engine"
@@ -29,6 +29,12 @@
         android:dialogMessage="@string/settings_translation_api_model_hint"
         android:summary="%s"
         android:title="@string/settings_translation_api_model"
+        app:allowDividerAbove="true" />
+
+    <Preference
+        android:key="translation_api_fetch_models"
+        android:summary="@string/settings_translation_fetch_models_summary"
+        android:title="@string/settings_translation_fetch_models"
         app:allowDividerAbove="true" />
 
     <Preference

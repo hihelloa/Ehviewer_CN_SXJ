@@ -72,27 +72,25 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.3.7-api
-          name: EhViewer v1.3.7（大模型翻译 API）
+          name: EhViewer v1.3.7（默认 API + 拉取模型）
           body: |
-            ## 新增：大模型翻译 API
+            ## 这一版：默认走大模型 API，设置里能直接拉模型列表
 
-            设置 → 翻译 → 翻译引擎，选「大模型 API」，填三项就能用：
+            ### 默认引擎改成大模型 API
 
-            | 项目 | 示例 |
-            | --- | --- |
-            | API 地址 | `https://api.deepseek.com` |
-            | API Key | 你自己的 key |
-            | 模型名称 | `deepseek-chat` |
+            装好就是「大模型 API」引擎，填了 Key 立刻生效，不用再去切一次。
+            没填 Key 时自动回落到内置免费接口，不会出现一句都翻不出来的情况。
 
-            兼容 OpenAI 的 `/chat/completions` 协议，DeepSeek、OpenAI、通义千问、
-            Kimi、智谱、硅基流动、本地 Ollama 都能接。填完点「测试连接」，
-            成功会显示一句翻译结果。
+            ### 新增「从上游获取模型」
 
-            - 走自己的 key，不会被免费接口限流，译文语气也比机翻自然
-            - 整页文字按编号一次性提交，模型逐条返回，不会串行串位
-            - 模型不按编号返回时自动退回逐块翻译
+            设置 → 翻译 → 从上游获取模型，直接读服务商的 `/models` 接口，
+            弹窗列出所有可用模型，点一下自动填好模型名，不用再去官网抄模型 ID。
+
+            - 兼容 OpenAI 的 `/chat/completions`：DeepSeek、OpenAI、通义千问、Kimi、智谱、硅基流动、本地 Ollama
+            - 地址写 `https://api.deepseek.com` 或 `https://api.openai.com/v1` 都能识别，拉列表时自动补 `/v1`
+            - 服务商没实现 `/models` 时会提示原因，仍可手填模型名
             - Key 只存在本机设置里，不上传任何地方
-            - 内置免费接口仍然保留，随时可以切回去
+            - 内置免费接口仍然保留，设置里随时可以切回去
 
             注意：已经翻译过的页不会因为换引擎而重翻，
             想用新引擎重翻某本书，先在阅读器菜单里「清除本书翻译缓存」。

@@ -1132,5 +1132,11 @@
     <string name="settings_translation_api_testing">Testing…</string>
     <string name="settings_translation_api_test_ok">Connection OK: %s</string>
     <string name="settings_translation_api_test_failed">Failed: %s</string>
-    <string name="settings_translation_tip">Works with any OpenAI-compatible /chat/completions endpoint: DeepSeek, OpenAI, Qwen, Kimi, Ollama and others. Pages already translated are not re-translated after switching engines; clear the cache of this book to redo them.</string>
+    <string name="settings_translation_fetch_models">Fetch models</string>
+    <string name="settings_translation_fetch_models_summary">Read the provider /models endpoint and pick one</string>
+    <string name="settings_translation_fetch_models_loading">Fetching models…</string>
+    <string name="settings_translation_fetch_models_failed">Failed: %s</string>
+    <string name="settings_translation_fetch_models_need_key">Fill in the API base URL and key first</string>
+    <string name="settings_translation_fetch_models_done">Model set to %s</string>
+    <string name="settings_translation_tip">Works with any OpenAI-compatible /chat/completions endpoint: DeepSeek, OpenAI, Qwen, Kimi, Ollama and others. The API engine is used by default; if no key is configured the built-in free engine takes over automatically. Pages already translated are not re-translated after switching engines; clear the cache of this book to redo them.</string>
 </resources>

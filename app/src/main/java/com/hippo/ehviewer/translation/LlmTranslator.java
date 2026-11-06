@@ -135,6 +135,146 @@ public final class LlmTranslator {
         return result.trim();
     }
 
+    /**
+     * 从上游的 /models 接口拉取可用模型列表。
+     *
+     * <p>不同服务商的 base URL 写法不一样：OpenAI 习惯写到 /v1，DeepSeek 写到域名根，
+     * 所以先按 {base}/models 试，404 再补一次 {base}/v1/models。
+     *
+     * <p>必须在后台线程调用。
+     *
+     * @return 去重并排序后的模型名；失败返回 null，原因写进 error
+     */
+    @Nullable
+    public static List<String> fetchModels(@NonNull StringBuilder error) {
+        String baseUrl = Settings.getTranslationApiBaseUrl().trim();
+        String apiKey = Settings.getTranslationApiKey().trim();
+        if (baseUrl.isEmpty() || apiKey.isEmpty()) {
+            error.append("请先填写 API 地址和 Key");
+            return null;
+        }
+        while (baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        }
+        if (baseUrl.endsWith("/chat/completions")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length() - "/chat/completions".length());
+        }
+
+        List<String> candidates = new ArrayList<>(2);
+        candidates.add(baseUrl + "/models");
+        if (!baseUrl.matches(".*/v\\d+[a-z0-9]*$")) {
+            // 没写版本号时再补一个 /v1/models，兼容 OpenAI 风格的根地址
+            candidates.add(baseUrl + "/v1/models");
+        }
+
+        String lastError = null;
+        // 拉列表不该等满 90 秒：服务端没实现 /models 时往往直接挂住
+        OkHttpClient client = getClient().newBuilder()
+                .readTimeout(20, TimeUnit.SECONDS)
+                .build();
+        for (String url : candidates) {
+            Request request = new Request.Builder()
+                    .url(url)
+                    .header("Authorization", "Bearer " + apiKey)
+                    .header("Accept", "application/json")
+                    .get()
+                    .build();
+            try {
+                Response response = client.newCall(request).execute();
+                try {
+                    String text = response.body() == null ? "" : response.body().string();
+                    if (response.isSuccessful()) {
+                        List<String> models = parseModels(text);
+                        if (!models.isEmpty()) {
+                            return models;
+                        }
+                        lastError = "接口没有返回模型列表";
+                    } else if (response.code() == 404) {
+                        // 路径不对，换下一个候选地址
+                        lastError = "HTTP 404";
+                    } else {
+                        error.append("HTTP ").append(response.code()).append(": ").append(brief(text));
+                        return null;
+                    }
+                } finally {
+                    response.close();
+                }
+            } catch (Throwable t) {
+                Log.e(TAG, "fetch models failed: " + t.getMessage());
+                lastError = t.getMessage() == null ? t.toString() : t.getMessage();
+            }
+        }
+        error.append(lastError == null ? "无法获取模型列表" : lastError);
+        return null;
+    }
+
+    /** 解析 /models 响应，兼容 data[].id、models[].name 和纯字符串数组三种格式。 */
+    @NonNull
+    private static List<String> parseModels(@NonNull String text) {
+        List<String> result = new ArrayList<>();
+        try {
+            JSONObject root = JSONObject.parseObject(text);
+            if (root == null) {
+                return result;
+            }
+            JSONArray array = root.getJSONArray("data");
+            if (array == null) {
+                array = root.getJSONArray("models");
+            }
+            if (array == null) {
+                return result;
+            }
+            for (int i = 0; i < array.size(); i++) {
+                Object item = array.get(i);
+                String id = null;
+                if (item instanceof String) {
+                    id = (String) item;
+                } else if (item instanceof JSONObject) {
+                    JSONObject object = (JSONObject) item;
+                    id = object.getString("id");
+                    if (id == null || id.trim().isEmpty()) {
+                        id = object.getString("name");
+                    }
+                }
+                if (id != null && !id.trim().isEmpty()) {
+                    result.add(id.trim());
+                }
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "parse models failed: " + t.getMessage());
+        }
+        // 去重后把 chat/instruct 这类适合对话的模型排前面，其余的按字母序
+        List<String> unique = new ArrayList<>();
+        for (String name : result) {
+            if (!unique.contains(name)) {
+                unique.add(name);
+            }
+        }
+        unique.sort((a, b) -> {
+            boolean ca = isChatModel(a);
+            boolean cb = isChatModel(b);
+            if (ca != cb) {
+                return ca ? -1 : 1;
+            }
+            return a.compareToIgnoreCase(b);
+        });
+        return unique;
+    }
+
+    private static boolean isChatModel(@NonNull String name) {
+        String lower = name.toLowerCase();
+        // 排除向量、语音、图像生成这类明显不能用于对话的模型
+        if (lower.contains("embedding") || lower.contains("whisper")
+                || lower.contains("tts") || lower.contains("dall-e")
+                || lower.contains("moderation")) {
+            return false;
+        }
+        return lower.contains("chat") || lower.contains("instruct")
+                || lower.contains("deepseek") || lower.contains("qwen")
+                || lower.contains("gpt") || lower.contains("claude")
+                || lower.contains("glm") || lower.contains("kimi");
+    }
+
     private static List<List<MangaTextBlock>> splitBatches(@NonNull List<MangaTextBlock> blocks) {
         List<List<MangaTextBlock>> result = new ArrayList<>();
         List<MangaTextBlock> current = new ArrayList<>();
