@@ -1049,5 +1049,7 @@
     <string name="settings_translation_fetch_models_failed">获取失败：%s</string>
     <string name="settings_translation_fetch_models_need_key">请先填写 API 地址和 Key</string>
     <string name="settings_translation_fetch_models_done">已选择模型 %s</string>
+    <string name="settings_translation_tls_compat">仅用 TLS 1.2 连接</string>
+    <string name="settings_translation_tls_compat_summary">连接报 TLS 握手失败时打开。部分中转站、VPN 或运营商网络不接受 TLS 1.3。</string>
     <string name="settings_translation_tip">兼容 OpenAI 的 /chat/completions 接口：DeepSeek、OpenAI、通义千问、Kimi、Ollama 等都能用。默认使用大模型 API，没填 Key 时自动回落到内置免费接口。译文质量取决于所选模型。已翻译过的页不会因为换引擎而重翻，想重翻请先在阅读器菜单里清除本书翻译缓存。</string>
 </resources>

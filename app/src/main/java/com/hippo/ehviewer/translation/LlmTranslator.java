@@ -11,6 +11,7 @@ import com.hippo.ehviewer.EhApplication;
 import com.hippo.ehviewer.Settings;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,11 +23,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import okhttp3.ConnectionSpec;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import okhttp3.TlsVersion;
 
 /**
  * 用户自填的大模型翻译接口（OpenAI 兼容的 /chat/completions）。
@@ -75,6 +79,9 @@ public final class LlmTranslator {
 
     private static final ExecutorService sExecutor = Executors.newFixedThreadPool(CONCURRENCY);
     private static volatile OkHttpClient sClient;
+    private static volatile Boolean sClientCompat;
+    /** 最近一次请求失败的可读原因，供「测试连接」直接展示。 */
+    private static volatile String sLastError;
 
     private LlmTranslator() {
     }
@@ -143,7 +150,10 @@ public final class LlmTranslator {
     public static String testConnection(@NonNull StringBuilder error) {
         String result = request(BATCH_PROMPT, "1. こんにちは\n2. ありがとう");
         if (result == null || result.trim().isEmpty()) {
-            error.append("请求失败，检查地址、Key、模型名和网络");
+            String detail = sLastError;
+            error.append(detail == null
+                    ? "请求失败，检查地址、Key、模型名和网络"
+                    : detail);
             return null;
         }
         if (TranslationVerify.looksJapanese(result)) {
@@ -491,22 +501,27 @@ public final class LlmTranslator {
                     if (response.isSuccessful()) {
                         String content = extractContent(text);
                         if (content != null && !content.trim().isEmpty()) {
+                            sLastError = null;
                             return content;
                         }
+                        sLastError = "接口返回了空内容";
                         Log.w(TAG, "empty completion: " + brief(text));
                         return null;
                     }
                     if (response.code() == 429 || response.code() >= 500) {
                         // 限流或服务端忙，退避后重试
+                        sLastError = "HTTP " + response.code() + "（服务端限流或异常）";
                         sleep(1000L * (attempt + 1));
                         continue;
                     }
+                    sLastError = "HTTP " + response.code() + "，请检查地址、Key 和模型名";
                     Log.w(TAG, "http " + response.code() + ": " + brief(text));
                     return null;
                 } finally {
                     response.close();
                 }
             } catch (Throwable t) {
+                sLastError = describeError(t);
                 Log.e(TAG, "request failed: " + t.getMessage());
                 if (attempt + 1 < MAX_RETRY) {
                     sleep(600L * (attempt + 1));
@@ -514,6 +529,26 @@ public final class LlmTranslator {
             }
         }
         return null;
+    }
+
+    /** 把底层异常翻译成可操作的提示，别把 BoringSSL 的堆栈直接甩给用户。 */
+    @NonNull
+    private static String describeError(@NonNull Throwable t) {
+        String msg = t.getMessage() == null ? t.toString() : t.getMessage();
+        String lower = msg.toLowerCase();
+        if (lower.contains("handshake_failure") || lower.contains("handshake failed")
+                || lower.contains("certificate") || lower.contains("ssl")) {
+            return "TLS 握手失败：网络或 VPN 拦截了 HTTPS 连接。"
+                    + "先断开 VPN/代理再试；仍然失败就打开下面的「仅用 TLS 1.2 连接」。";
+        }
+        if (lower.contains("timeout") || lower.contains("timed out")) {
+            return "连接超时：当前网络到该地址不通，换 Wi-Fi 或换个时段重试。";
+        }
+        if (lower.contains("unable to resolve host") || lower.contains("unknownhost")
+                || lower.contains("nodename nor servname")) {
+            return "域名解析失败：检查 API 地址有没有拼错。";
+        }
+        return "请求失败：" + msg;
     }
 
     @Nullable
@@ -545,13 +580,26 @@ public final class LlmTranslator {
     }
 
     private static synchronized OkHttpClient getClient() {
-        if (sClient == null) {
+        boolean compat = Settings.getTranslationTlsCompat();
+        if (sClient == null || sClientCompat == null || sClientCompat != compat) {
             // 大模型生成比普通接口慢得多，单独放宽读超时，别用翻译接口那套 20 秒
-            sClient = EhApplication.getOkHttpClient(EhApplication.getInstance()).newBuilder()
+            OkHttpClient.Builder builder = EhApplication.getOkHttpClient(EhApplication.getInstance())
+                    .newBuilder()
                     .connectTimeout(20, TimeUnit.SECONDS)
                     .writeTimeout(30, TimeUnit.SECONDS)
-                    .readTimeout(90, TimeUnit.SECONDS)
-                    .build();
+                    .readTimeout(90, TimeUnit.SECONDS);
+            if (compat) {
+                // 部分中转站或中间设备不接受 TLS 1.3 的 ClientHello，
+                // 表现就是 BoringSSL 的 HANDSHAKE_FAILURE_ON_CLIENT_HELLO。
+                // 退回 TLS 1.2，并把 HTTP 协议锁到 1.1，绕开这类兼容问题。
+                ConnectionSpec spec = new ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
+                        .tlsVersions(TlsVersion.TLS_1_2)
+                        .build();
+                builder.connectionSpecs(Collections.singletonList(spec));
+                builder.protocols(Collections.singletonList(Protocol.HTTP_1_1));
+            }
+            sClient = builder.build();
+            sClientCompat = compat;
         }
         return sClient;
     }

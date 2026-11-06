@@ -763,6 +763,22 @@ public class Settings {
         putString(KEY_TRANSLATION_API_MODEL, value);
     }
 
+    public static final String KEY_TRANSLATION_TLS_COMPAT = "translation_tls_compat";
+
+    /**
+     * 兼容模式：只用 TLS 1.2 + HTTP/1.1 连翻译接口。
+     *
+     * <p>部分中转站或网络环境会拒绝 TLS 1.3 的 ClientHello，
+     * 表现为 BoringSSL 的 HANDSHAKE_FAILURE_ON_CLIENT_HELLO。
+     */
+    public static boolean getTranslationTlsCompat() {
+        return getBoolean(KEY_TRANSLATION_TLS_COMPAT, false);
+    }
+
+    public static void putTranslationTlsCompat(boolean value) {
+        putBoolean(KEY_TRANSLATION_TLS_COMPAT, value);
+    }
+
     private static final String KEY_SHOW_PAGE_INTERVAL = "gallery_show_page_interval";
     private static final boolean DEFAULT_SHOW_PAGE_INTERVAL = true;
 

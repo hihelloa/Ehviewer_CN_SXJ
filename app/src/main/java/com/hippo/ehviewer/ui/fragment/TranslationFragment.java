@@ -132,6 +132,7 @@ public class TranslationFragment extends BasePreferenceFragmentCompat {
         setEnabled(Settings.KEY_TRANSLATION_API_MODEL, enabled);
         setEnabled("translation_api_fetch_models", enabled);
         setEnabled("translation_api_test", enabled);
+        setEnabled(Settings.KEY_TRANSLATION_TLS_COMPAT, enabled);
     }
 
     private void setEnabled(@Nullable String key, boolean enabled) {

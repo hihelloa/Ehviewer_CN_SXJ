@@ -43,6 +43,13 @@
         android:title="@string/settings_translation_api_test"
         app:allowDividerAbove="true" />
 
+    <com.hippo.preference.SwitchPreference
+        android:defaultValue="false"
+        android:key="translation_tls_compat"
+        android:summary="@string/settings_translation_tls_compat_summary"
+        android:title="@string/settings_translation_tls_compat"
+        app:allowDividerAbove="true" />
+
     <Preference
         android:selectable="false"
         android:summary="@string/settings_translation_tip" />

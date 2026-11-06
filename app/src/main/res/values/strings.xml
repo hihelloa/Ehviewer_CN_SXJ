@@ -1138,5 +1138,7 @@
     <string name="settings_translation_fetch_models_failed">Failed: %s</string>
     <string name="settings_translation_fetch_models_need_key">Fill in the API base URL and key first</string>
     <string name="settings_translation_fetch_models_done">Model set to %s</string>
+    <string name="settings_translation_tls_compat">Use TLS 1.2 only</string>
+    <string name="settings_translation_tls_compat_summary">Turn on if the connection fails with a TLS handshake error. Some relays and VPNs reject TLS 1.3.</string>
     <string name="settings_translation_tip">Works with any OpenAI-compatible /chat/completions endpoint: DeepSeek, OpenAI, Qwen, Kimi, Ollama and others. The API engine is used by default; if no key is configured the built-in free engine takes over automatically. Pages already translated are not re-translated after switching engines; clear the cache of this book to redo them.</string>
 </resources>
