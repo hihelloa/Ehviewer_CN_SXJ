@@ -55,12 +55,12 @@ import android.widget.Toast;
 import com.hippo.ehviewer.translation.BakedTranslationStore;
 import com.hippo.ehviewer.translation.BatchMangaTranslator;
 import com.hippo.ehviewer.translation.GalleryTranslationOverlay;
-import com.hippo.ehviewer.translation.GoogleTranslator;
 import com.hippo.ehviewer.translation.MangaOcrManager;
 import com.hippo.ehviewer.translation.MangaTextBlock;
 import com.hippo.ehviewer.translation.MangaTranslationCache;
 import com.hippo.ehviewer.translation.ProviderPageSource;
 import com.hippo.ehviewer.translation.SpiderQueenPageSource;
+import com.hippo.ehviewer.translation.TranslationEngine;
 import com.hippo.ehviewer.translation.TranslationProgressDialog;
 import com.hippo.util.IoThreadPoolExecutor;
 import java.io.File;
@@ -1238,7 +1238,7 @@ public class GalleryActivity extends EhActivity implements SeekBar.OnSeekBarChan
                                 R.string.translate_nothing, Toast.LENGTH_SHORT).show());
                         return;
                     }
-                    int translated = GoogleTranslator.translateBlocksSync(blocks);
+                    int translated = TranslationEngine.translateBlocksSync(blocks);
                     if (translated == 0) {
                         // 整页一句都没译出来（限流/断网）：同样不能写缓存，
                         // 否则这一页会被当成"已翻译"，以后再也不会重试。

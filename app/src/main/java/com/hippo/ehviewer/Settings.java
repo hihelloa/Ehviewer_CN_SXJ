@@ -713,6 +713,56 @@ public class Settings {
         putBoolean(KEY_BAKED_TRANSLATION, value);
     }
 
+    /** 翻译引擎：0 用内置免费 Google 接口，1 用用户自填的大模型 API。 */
+    public static final int TRANSLATION_ENGINE_GOOGLE = 0;
+    public static final int TRANSLATION_ENGINE_LLM = 1;
+
+    public static final String KEY_TRANSLATION_ENGINE = "translation_engine";
+    private static final int DEFAULT_TRANSLATION_ENGINE = TRANSLATION_ENGINE_GOOGLE;
+
+    public static int getTranslationEngine() {
+        // ListPreference 往 SharedPreferences 里写的是字符串，必须按字符串读，
+        // 直接用 getInt 会抛 ClassCastException
+        return getIntFromStr(KEY_TRANSLATION_ENGINE, DEFAULT_TRANSLATION_ENGINE);
+    }
+
+    public static void putTranslationEngine(int value) {
+        putIntToStr(KEY_TRANSLATION_ENGINE, value);
+    }
+
+    public static final String KEY_TRANSLATION_API_BASE_URL = "translation_api_base_url";
+    /** 默认填 DeepSeek，改模型和地址就能用 OpenAI、通义、Kimi、Ollama 等兼容接口。 */
+    private static final String DEFAULT_TRANSLATION_API_BASE_URL = "https://api.deepseek.com";
+
+    public static String getTranslationApiBaseUrl() {
+        return getString(KEY_TRANSLATION_API_BASE_URL, DEFAULT_TRANSLATION_API_BASE_URL);
+    }
+
+    public static void putTranslationApiBaseUrl(String value) {
+        putString(KEY_TRANSLATION_API_BASE_URL, value);
+    }
+
+    public static final String KEY_TRANSLATION_API_KEY = "translation_api_key";
+
+    public static String getTranslationApiKey() {
+        return getString(KEY_TRANSLATION_API_KEY, "");
+    }
+
+    public static void putTranslationApiKey(String value) {
+        putString(KEY_TRANSLATION_API_KEY, value);
+    }
+
+    public static final String KEY_TRANSLATION_API_MODEL = "translation_api_model";
+    private static final String DEFAULT_TRANSLATION_API_MODEL = "deepseek-chat";
+
+    public static String getTranslationApiModel() {
+        return getString(KEY_TRANSLATION_API_MODEL, DEFAULT_TRANSLATION_API_MODEL);
+    }
+
+    public static void putTranslationApiModel(String value) {
+        putString(KEY_TRANSLATION_API_MODEL, value);
+    }
+
     private static final String KEY_SHOW_PAGE_INTERVAL = "gallery_show_page_interval";
     private static final boolean DEFAULT_SHOW_PAGE_INTERVAL = true;
 

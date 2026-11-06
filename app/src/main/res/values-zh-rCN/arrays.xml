@@ -33,4 +33,9 @@
 
     </string-array>
 
+    <string-array name="translation_engine_entries">
+        <item>内置免费接口（Google）</item>
+        <item>大模型 API</item>
+    </string-array>
+
 </resources>

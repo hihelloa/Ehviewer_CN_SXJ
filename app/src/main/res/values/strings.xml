@@ -1116,4 +1116,21 @@
     <string name="translate_clear_cache">Clear translation cache of this book</string>
     <string name="translate_cleared">Translation cache cleared</string>
     <string name="translate_more">More translation options</string>
+
+    <string name="settings_translation">Translation</string>
+    <string name="settings_translation_engine">Translation engine</string>
+    <string name="settings_translation_api_base_url">API base URL</string>
+    <string name="settings_translation_api_base_url_hint">For example https://api.deepseek.com or https://api.openai.com/v1</string>
+    <string name="settings_translation_api_key">API key</string>
+    <string name="settings_translation_api_key_hint">Only stored on this device</string>
+    <string name="settings_translation_api_key_set">Configured</string>
+    <string name="settings_translation_api_key_unset">Not configured</string>
+    <string name="settings_translation_api_model">Model name</string>
+    <string name="settings_translation_api_model_hint">For example deepseek-chat or gpt-4o-mini</string>
+    <string name="settings_translation_api_test">Test connection</string>
+    <string name="settings_translation_api_test_summary">Send a short request to check the address, key and model</string>
+    <string name="settings_translation_api_testing">Testing…</string>
+    <string name="settings_translation_api_test_ok">Connection OK: %s</string>
+    <string name="settings_translation_api_test_failed">Failed: %s</string>
+    <string name="settings_translation_tip">Works with any OpenAI-compatible /chat/completions endpoint: DeepSeek, OpenAI, Qwen, Kimi, Ollama and others. Pages already translated are not re-translated after switching engines; clear this book's cache to redo them.</string>
 </resources>

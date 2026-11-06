@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <com.hippo.preference.ListPreference
+        android:defaultValue="0"
+        android:key="translation_engine"
+        android:summary="%s"
+        android:title="@string/settings_translation_engine"
+        app:entries="@array/translation_engine_entries"
+        app:entryValues="@array/translation_engine_values" />
+
+    <androidx.preference.EditTextPreference
+        android:key="translation_api_base_url"
+        android:dialogMessage="@string/settings_translation_api_base_url_hint"
+        android:summary="%s"
+        android:title="@string/settings_translation_api_base_url"
+        app:allowDividerAbove="true" />
+
+    <androidx.preference.EditTextPreference
+        android:key="translation_api_key"
+        android:dialogMessage="@string/settings_translation_api_key_hint"
+        android:summary="%s"
+        android:title="@string/settings_translation_api_key"
+        app:allowDividerAbove="true" />
+
+    <androidx.preference.EditTextPreference
+        android:key="translation_api_model"
+        android:dialogMessage="@string/settings_translation_api_model_hint"
+        android:summary="%s"
+        android:title="@string/settings_translation_api_model"
+        app:allowDividerAbove="true" />
+
+    <Preference
+        android:key="translation_api_test"
+        android:summary="@string/settings_translation_api_test_summary"
+        android:title="@string/settings_translation_api_test"
+        app:allowDividerAbove="true" />
+
+    <Preference
+        android:selectable="false"
+        android:summary="@string/settings_translation_tip" />
+
+</PreferenceScreen>

@@ -307,10 +307,10 @@ public class BatchMangaTranslator {
                 if (cachedBlocks != null) {
                     // 旧缓存里可能还留着当时没译出来的空句，补译一遍再烧录，
                     // 否则这些句子会永远停在空白
-                    GoogleTranslator.fillMissingTranslations(blocks);
-                    translated = GoogleTranslator.countTranslated(blocks);
+                    TranslationEngine.fillMissingTranslations(blocks);
+                    translated = TranslationEngine.countTranslated(blocks);
                 } else {
-                    translated = GoogleTranslator.translateBlocksSync(blocks);
+                    translated = TranslationEngine.translateBlocksSync(blocks);
                 }
                 if (!blocks.isEmpty() && translated == 0) {
                     // 整页翻译全部失败（限流/断网），不要写缓存，否则该页会永久停留在原文
