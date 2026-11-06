@@ -101,7 +101,10 @@ public class MangaTranslationCache {
             for (MangaTextBlock block : blocks) {
                 MangaTextBlock item = new MangaTextBlock(block.originalText,
                         new Rect(block.boundingBox), block.imageWidth, block.imageHeight);
-                item.setTranslatedText(block.translatedText);
+                // 旧版本会把模型原样返回的日文当成译文写进缓存，
+                // 读出来先过滤掉，否则会被当成中文烧到图上
+                item.setTranslatedText(TranslationVerify.isUsable(block.originalText, block.translatedText)
+                        ? block.translatedText : "");
                 copy.add(item);
             }
             return copy;
@@ -113,6 +116,36 @@ public class MangaTranslationCache {
         synchronized (cache) {
             List<MangaTextBlock> blocks = cache.pages.get(pageIndex);
             return blocks != null && !blocks.isEmpty();
+        }
+    }
+
+    /**
+     * 这一页缓存里是否存在"译文其实还是日文"的脏数据。
+     *
+     * <p>只由旧版本写入：当时没有校验，模型原样返回的日文被当成译文存了下来，
+     * 还被烧进了图片。检测到就必须重做这一页，光清缓存不够。
+     */
+    public boolean hasInvalidTranslation(@NonNull String key, int pageIndex) {
+        GalleryCache cache = obtain(key);
+        synchronized (cache) {
+            List<MangaTextBlock> blocks = cache.pages.get(pageIndex);
+            if (blocks == null || blocks.isEmpty()) {
+                return false;
+            }
+            for (MangaTextBlock block : blocks) {
+                if (block.originalText == null || block.originalText.trim().isEmpty()) {
+                    continue;
+                }
+                String translated = block.translatedText;
+                // 空译文不算脏数据：那可能是模型确实译不出的拟声词，重做也没用
+                if (translated == null || translated.trim().isEmpty()) {
+                    continue;
+                }
+                if (!TranslationVerify.isUsable(block.originalText, translated)) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 

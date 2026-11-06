@@ -245,8 +245,11 @@ public class BatchMangaTranslator {
         // 但若这页还没烧录成"汉化图"，需要再取一次图补烧录。
         List<MangaTextBlock> cachedBlocks = null;
         if (cache.isPageProcessed(key, index)) {
+            // 旧版本可能把模型原样返回的日文当成译文存了进来，这类页必须重做，
+            // 否则烧录图上永远是一句日文，用户会以为"翻译出来不是中文"
+            boolean invalid = cache.hasInvalidTranslation(key, index);
             if (Settings.getBakedTranslation()
-                    && !BakedTranslationStore.has(task.appContext, key, index)) {
+                    && (invalid || !BakedTranslationStore.has(task.appContext, key, index))) {
                 cachedBlocks = cache.getPage(key, index);
             }
             if (cachedBlocks == null || cachedBlocks.isEmpty()) {

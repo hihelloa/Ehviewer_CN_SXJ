@@ -50,12 +50,12 @@ jobs:
         run: |
           APK=$(ls app/build/outputs/apk/appRelease/release/*.apk | head -1)
           echo "构建产物：$APK"
-          cp "$APK" EhViewer_v1.3.8_fix.apk
+          cp "$APK" EhViewer_v1.3.9_zh.apk
 
       - name: Verify signature
         run: |
-          keytool -printcert -jarfile EhViewer_v1.3.8_fix.apk
-          keytool -printcert -jarfile EhViewer_v1.3.8_fix.apk \
+          keytool -printcert -jarfile EhViewer_v1.3.9_zh.apk
+          keytool -printcert -jarfile EhViewer_v1.3.9_zh.apk \
             | grep -q "F2:A9:F5:3A:7C:BD:F6:56:B4:F7:3E:90:6A:F4:F2:51:C2:5E:F5:31:01:1D:4E:76:49:EB:2E:9D:85:5E:AD:A0" \
             || (echo "::error::APK 签名不是预期的固定证书" && exit 1)
 
@@ -71,10 +71,57 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.3.8-fix
-          name: EhViewer v1.3.8（修复设置闪退）
+          tag_name: v1.3.9-zh
+          name: EhViewer v1.3.9（译文强制中文）
           body: |
-            ## 这一版修的是崩溃
+            ## 这一版：保证译文就是简体中文
+
+            ### 内置提示词已改成强制中文
+
+            发给模型的系统提示词现在是：
+
+            > 你是一名日文漫画的专职翻译。用户会按编号给你若干条日文台词，你要逐条译成简体中文。
+            > 硬性要求：
+            > 1. 输出语言只能是简体中文。原文里的日文假名必须译成中文，禁止保留假名、禁止输出日文原文、禁止罗马音、禁止英文。
+            > 2. 每条译文单独一行，格式为「编号. 译文」，编号和顺序必须与输入完全一致。
+            > 3. 不要合并、拆分、遗漏任何一条；输入里本来就是中文的条目照抄即可。
+            > 4. 不要输出解释、注释、引号、markdown 代码块或任何额外内容。
+            > 5. 拟声词译成对应的中文拟声词，语气词按中文口语习惯表达。
+            > 6. 人名、地名用通行的中文译名或保留汉字，不要写成片假名。
+
+            并且带了一组「おはよう → 早上好」的示例，让模型照着格式输出。
+
+            免费接口那一侧也确认过：请求参数是 `tl=zh-CN`，目标就是简体中文。
+
+            ### 新增译文语言校验
+
+            提示词是"请求"，不是"保证"。模型有时会把日文原样返回，
+            以前这种结果会被当成译文写进缓存、烧进图片，看起来就是"翻译出来不是中文"。
+
+            现在每条译文都要过一道字符校验：假名数量达到 2 个、
+            且占比超过 18%，就判定这条还是日文，直接丢弃、不写缓存、不烧录。
+            中文里偶尔出现的「の」这类单字不会误伤。
+
+            ### 旧缓存里的日文会自动重做
+
+            之前版本存进缓存、甚至已经烧到图上的日文，会被识别为脏数据。
+            点一次「翻译整本」，这些页会重新 OCR、重新翻译、重新烧录，不用手动清缓存。
+
+            ### 「测试连接」能直接看出模型行不行
+
+            现在点测试连接，如果模型连通但返回的仍是日文，
+            会直接提示「模型返回的仍是日文，没有执行翻译」，并建议换对话模型。
+            不用再靠眼睛看整页效果判断。
+
+            ### 关于视觉模型
+
+            全程不需要视觉模型。日文识别是手机本地用 ML Kit 做的，
+            发给 API 的只有识别出来的纯文本，纯文本对话模型就够：
+            `deepseek-chat`、`gpt-4o-mini`、`qwen-plus`、`glm-4-flash` 都可以。
+
+            ---
+
+            ## v1.3.8：修复设置闪退
 
             ### 修复：设置 → 翻译 一点就退出
 
@@ -109,9 +156,7 @@ jobs:
 
             ---
 
-            ## v1.3.6：翻译加速
-
-            ## 这一版只做一件事：让翻译快起来
+            ## v1.3.6：让翻译快起来
 
             ### 1. 整本翻译改成两页并行
 
@@ -197,6 +242,6 @@ jobs:
             - 下载失败页无限退避重试，不再作废
             - 烧录图迁到 filesDir，烧录缺失时回退气泡
             - 解除 OkHttp 单 host 5 并发上限、去掉图片重复磁盘缓存
-          files: EhViewer_v1.3.8_fix.apk
+          files: EhViewer_v1.3.9_zh.apk
           draft: false
           prerelease: false

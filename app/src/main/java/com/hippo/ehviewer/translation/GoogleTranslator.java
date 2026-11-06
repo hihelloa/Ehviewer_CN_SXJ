@@ -201,7 +201,8 @@ public class GoogleTranslator {
             if (block.originalText == null || block.originalText.trim().isEmpty()) {
                 continue;
             }
-            if (block.translatedText == null || block.translatedText.trim().isEmpty()) {
+            // 空译文或"译文其实还是日文"都要重译
+            if (!TranslationVerify.isUsable(block.originalText, block.translatedText)) {
                 missing.add(block);
             }
         }
@@ -273,7 +274,8 @@ public class GoogleTranslator {
         List<MangaTextBlock> failed = new ArrayList<>();
         for (int i = 0; i < valid.size(); i++) {
             String text = lines[i].trim();
-            if (!text.isEmpty()) {
+            // sl=auto 偶尔把日文误判成中文原样返回，这种结果不能当译文
+            if (!text.isEmpty() && TranslationVerify.isUsable(valid.get(i).originalText, text)) {
                 valid.get(i).setTranslatedText(text);
                 success++;
             } else {
@@ -330,7 +332,8 @@ public class GoogleTranslator {
                     return;
                 }
                 String translated = translateText(original);
-                if (translated != null && !translated.isEmpty()) {
+                if (translated != null && !translated.isEmpty()
+                        && TranslationVerify.isUsable(original, translated)) {
                     for (MangaTextBlock block : targets) {
                         block.setTranslatedText(translated);
                     }

@@ -46,16 +46,28 @@ public final class LlmTranslator {
     private static final int CIRCUIT_BREAK_AFTER = 3;
 
     private static final String BATCH_PROMPT =
-            "你是专业的日文漫画翻译。用户会按编号给你若干条日文台词，请逐条翻译成自然、口语化的简体中文。\n" +
-            "严格按下面的规则输出：\n" +
-            "1. 每条译文单独一行，格式为「编号. 译文」，编号和顺序必须与输入完全一致。\n" +
-            "2. 不要合并、拆分、遗漏任何一条；原文不是日文时原样输出。\n" +
-            "3. 不要输出解释、注释、罗马音、引号或任何额外内容。\n" +
-            "4. 拟声词翻译成对应的中文拟声词，语气词保留原意。";
+            "你是一名日文漫画的专职翻译。用户会按编号给你若干条日文台词，你要逐条译成简体中文。\n" +
+            "\n" +
+            "硬性要求：\n" +
+            "1. 输出语言只能是简体中文。原文里的日文假名必须译成中文，禁止保留假名、禁止输出日文原文、禁止罗马音、禁止英文。\n" +
+            "2. 每条译文单独一行，格式为「编号. 译文」，编号和顺序必须与输入完全一致。\n" +
+            "3. 不要合并、拆分、遗漏任何一条；输入里本来就是中文的条目照抄即可。\n" +
+            "4. 不要输出解释、注释、引号、markdown 代码块或任何额外内容。\n" +
+            "5. 拟声词译成对应的中文拟声词，语气词按中文口语习惯表达。\n" +
+            "6. 人名、地名用通行的中文译名或保留汉字，不要写成片假名。\n" +
+            "\n" +
+            "示例：\n" +
+            "输入：\n" +
+            "1. おはよう\n" +
+            "2. 何してるの？\n" +
+            "输出：\n" +
+            "1. 早上好\n" +
+            "2. 你在干什么？";
 
     private static final String SINGLE_PROMPT =
-            "把下面这句日文漫画台词翻译成自然、口语化的简体中文。" +
-            "只输出译文本身，不要解释、不要引号、不要罗马音；原文不是日文就原样返回。";
+            "把下面这句日文漫画台词翻译成简体中文。\n" +
+            "只输出中文译文本身：不要日文原文、不要假名、不要罗马音、不要英文、不要解释、不要引号。\n" +
+            "保持口语化，符合漫画对白的语气。";
 
     /** 行首编号：支持 "1. "、"1、"、"1)"、"1：" 等模型常见格式。 */
     private static final Pattern NUMBERED =
@@ -114,7 +126,9 @@ public final class LlmTranslator {
             if (block.originalText == null || block.originalText.trim().isEmpty()) {
                 continue;
             }
-            if (block.translatedText == null || block.translatedText.trim().isEmpty()) {
+            // 空译文，或旧版本存下来的"译文其实还是日文"，都要重译
+            if (!TranslationVerify.isUsable(block.originalText, block.translatedText)) {
+                block.setTranslatedText("");
                 missing.add(block);
             }
         }
@@ -130,6 +144,11 @@ public final class LlmTranslator {
         String result = request(BATCH_PROMPT, "1. こんにちは\n2. ありがとう");
         if (result == null || result.trim().isEmpty()) {
             error.append("请求失败，检查地址、Key、模型名和网络");
+            return null;
+        }
+        if (TranslationVerify.looksJapanese(result)) {
+            // 模型连通但没在翻译，这种情况最难发现：返回的日文会被当成译文画到图上
+            error.append("模型返回的仍是日文，没有执行翻译。请换一个对话模型（如 deepseek-chat、gpt-4o-mini、qwen-plus）");
             return null;
         }
         return result.trim();
@@ -322,12 +341,29 @@ public final class LlmTranslator {
         }
 
         int success = 0;
+        int rejected = 0;
         for (int i = 0; i < batch.size(); i++) {
+            MangaTextBlock block = batch.get(i);
             String translated = parsed.get(i + 1);
-            if (translated != null && !translated.isEmpty()) {
-                batch.get(i).setTranslatedText(translated);
-                success++;
+            if (translated == null || translated.isEmpty()) {
+                continue;
             }
+            // 模型有时会把日文原样返回，这种"译文"画到图上就是一句日文
+            if (!TranslationVerify.isUsable(block.originalText, translated)) {
+                rejected++;
+                Log.w(TAG, "reject non-Chinese: " + brief(block.originalText)
+                        + " -> " + brief(translated));
+                continue;
+            }
+            block.setTranslatedText(translated);
+            success++;
+        }
+        if (rejected > 0) {
+            Log.w(TAG, "rejected " + rejected + " result(s) that are not Chinese");
+        }
+        if (success == 0) {
+            // 整批都没译出中文，退回逐块再试一次（逐块提示词约束更直接）
+            return -1;
         }
         return success;
     }
@@ -375,12 +411,16 @@ public final class LlmTranslator {
                 if (consecutiveFailures.get() >= CIRCUIT_BREAK_AFTER) {
                     return;
                 }
-                String translated = request(SINGLE_PROMPT, original);
-                if (translated != null && !translated.trim().isEmpty()) {
-                    block.setTranslatedText(cleanSingle(translated));
+                String translated = cleanSingle(request(SINGLE_PROMPT, original));
+                if (!translated.isEmpty() && TranslationVerify.isUsable(original, translated)) {
+                    block.setTranslatedText(translated);
                     success.incrementAndGet();
                     consecutiveFailures.set(0);
                 } else {
+                    if (!translated.isEmpty()) {
+                        Log.w(TAG, "reject non-Chinese: " + brief(original)
+                                + " -> " + brief(translated));
+                    }
                     block.setTranslatedText("");
                     consecutiveFailures.incrementAndGet();
                 }
@@ -397,8 +437,13 @@ public final class LlmTranslator {
     }
 
     @NonNull
-    private static String cleanSingle(@NonNull String text) {
+    private static String cleanSingle(@Nullable String text) {
+        if (text == null) {
+            return "";
+        }
         String result = text.trim();
+        // 有些模型会把译文包在 markdown 代码块里
+        result = result.replace("```", "").trim();
         if (result.length() >= 2
                 && (result.startsWith("「") && result.endsWith("」")
                 || result.startsWith("\"") && result.endsWith("\""))) {
