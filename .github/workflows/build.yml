@@ -50,12 +50,12 @@ jobs:
         run: |
           APK=$(ls app/build/outputs/apk/appRelease/release/*.apk | head -1)
           echo "构建产物：$APK"
-          cp "$APK" EhViewer_v1.3.7_api.apk
+          cp "$APK" EhViewer_v1.3.8_fix.apk
 
       - name: Verify signature
         run: |
-          keytool -printcert -jarfile EhViewer_v1.3.7_api.apk
-          keytool -printcert -jarfile EhViewer_v1.3.7_api.apk \
+          keytool -printcert -jarfile EhViewer_v1.3.8_fix.apk
+          keytool -printcert -jarfile EhViewer_v1.3.8_fix.apk \
             | grep -q "F2:A9:F5:3A:7C:BD:F6:56:B4:F7:3E:90:6A:F4:F2:51:C2:5E:F5:31:01:1D:4E:76:49:EB:2E:9D:85:5E:AD:A0" \
             || (echo "::error::APK 签名不是预期的固定证书" && exit 1)
 
@@ -71,10 +71,22 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.3.7-api
-          name: EhViewer v1.3.7（默认 API + 拉取模型）
+          tag_name: v1.3.8-fix
+          name: EhViewer v1.3.8（修复设置闪退）
           body: |
-            ## 这一版：默认走大模型 API，设置里能直接拉模型列表
+            ## 这一版修的是崩溃
+
+            ### 修复：设置 → 翻译 一点就退出
+
+            翻译引擎这一项在布局里用的是项目自带的列表控件，
+            代码里却按系统库的同名控件去取，进入页面时类型转换失败，进程直接退出。
+            已改为取正确的控件类型。
+
+            拉取模型、填写地址、填写 Key 的回填逻辑也一并核对过，选中模型会立即写入并刷新摘要。
+
+            ---
+
+            ## v1.3.7：默认走大模型 API，设置里能直接拉模型列表
 
             ### 默认引擎改成大模型 API
 
@@ -185,6 +197,6 @@ jobs:
             - 下载失败页无限退避重试，不再作废
             - 烧录图迁到 filesDir，烧录缺失时回退气泡
             - 解除 OkHttp 单 host 5 并发上限、去掉图片重复磁盘缓存
-          files: EhViewer_v1.3.7_api.apk
+          files: EhViewer_v1.3.8_fix.apk
           draft: false
           prerelease: false
