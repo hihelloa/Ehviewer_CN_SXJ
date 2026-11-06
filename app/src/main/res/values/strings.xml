@@ -1132,5 +1132,5 @@
     <string name="settings_translation_api_testing">Testing…</string>
     <string name="settings_translation_api_test_ok">Connection OK: %s</string>
     <string name="settings_translation_api_test_failed">Failed: %s</string>
-    <string name="settings_translation_tip">Works with any OpenAI-compatible /chat/completions endpoint: DeepSeek, OpenAI, Qwen, Kimi, Ollama and others. Pages already translated are not re-translated after switching engines; clear this book's cache to redo them.</string>
+    <string name="settings_translation_tip">Works with any OpenAI-compatible /chat/completions endpoint: DeepSeek, OpenAI, Qwen, Kimi, Ollama and others. Pages already translated are not re-translated after switching engines; clear the cache of this book to redo them.</string>
 </resources>
